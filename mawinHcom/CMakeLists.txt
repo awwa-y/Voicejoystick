@@ -26,6 +26,9 @@ qt_add_executable(mawinHcom
     commandprocessor.cpp
     VoskWorker.h
     VoskWorker.cpp
+    ringbuffer.h
+    ringbuffer.cpp
+    devicemanager.h devicemanager.cpp
 )
 
 # Vosk 配置
