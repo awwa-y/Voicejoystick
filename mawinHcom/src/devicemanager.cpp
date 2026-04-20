@@ -4,11 +4,13 @@
 DeviceManager::DeviceManager(QObject *parent)
     : QObject(parent), nextDeviceId(1), activeDeviceId(-1)
 {
-}
 
+}
 DeviceManager::~DeviceManager()
 {
-    for (auto device : devices) {
+    QMap<int, DeviceInfo*>::const_iterator it = devices.constBegin();
+    while (it != devices.constEnd()) {
+        DeviceInfo *device = it.value();
         if (device->serialWork) {
             device->thread->quit();
             device->thread->wait();
@@ -16,6 +18,7 @@ DeviceManager::~DeviceManager()
             delete device->thread;
         }
         delete device;
+        ++it;
     }
 }
 
@@ -34,17 +37,14 @@ int DeviceManager::addDevice(const QString &portName, int baudRate, const QStrin
     device->thread = new QThread();
     device->serialWork = new SerialWork(deviceId, this);
 
-    // 连接DeviceManager信号到SerialWork槽
     connect(this, &DeviceManager::openSerialRequest, device->serialWork, &SerialWork::openSerial);
     connect(this, &DeviceManager::closeSerialRequest, device->serialWork, &SerialWork::closeSerial);
     connect(this, &DeviceManager::sendDataRequest, device->serialWork, &SerialWork::sendData);
 
-    // 连接SerialWork信号到DeviceManager槽
     connect(device->serialWork, &SerialWork::serialOpened, this, &DeviceManager::handleSerialOpened);
     connect(device->serialWork, &SerialWork::serialClosed, this, &DeviceManager::handleSerialClosed);
     connect(device->serialWork, &SerialWork::errorOccurred, this, &DeviceManager::handleSerialError);
 
-    // 连接串口数据就绪信号（高频优化）
     connect(device->serialWork, &SerialWork::newDataAvailable, this, &DeviceManager::handleDataAvailable, Qt::QueuedConnection);
 
     device->serialWork->moveToThread(device->thread);
@@ -103,10 +103,8 @@ bool DeviceManager::sendData(int deviceId, const QByteArray &data)
         return false;
     }
 
-    // 直接发送，无需队列缓冲
     emit sendDataRequest(deviceId, data);
 
-    // 更新设备活动时间
     device->lastActivity = QDateTime::currentDateTime();
     device->lastCommand = data;
 
@@ -119,8 +117,8 @@ bool DeviceManager::sendCommandByType(DeviceType deviceType, const QByteArray &d
     if (deviceTypeMap.contains(deviceType)) {
         bool success = false;
         QList<int> deviceIds = deviceTypeMap[deviceType];
-        foreach (int deviceId, deviceIds) {
-            if (sendData(deviceId, data)) {
+        for (QList<int>::const_iterator it = deviceIds.constBegin(); it != deviceIds.constEnd(); ++it) {
+            if (sendData(*it, data)) {
                 success = true;
             }
         }
@@ -132,10 +130,12 @@ bool DeviceManager::sendCommandByType(DeviceType deviceType, const QByteArray &d
 bool DeviceManager::broadcastCommand(const QByteArray &data)
 {
     bool success = false;
-    foreach (int deviceId, devices.keys()) {
-        if (sendData(deviceId, data)) {
+    QMap<int, DeviceInfo*>::const_iterator it = devices.constBegin();
+    while (it != devices.constEnd()) {
+        if (sendData(it.key(), data)) {
             success = true;
         }
+        ++it;
     }
     return success;
 }
@@ -143,9 +143,12 @@ bool DeviceManager::broadcastCommand(const QByteArray &data)
 QMap<int, QString> DeviceManager::getDeviceList()
 {
     QMap<int, QString> deviceList;
-    for (auto device : devices) {
+    QMap<int, DeviceInfo*>::const_iterator it = devices.constBegin();
+    while (it != devices.constEnd()) {
+        DeviceInfo *device = it.value();
         QString status = device->isConnected ? "Connected" : "Disconnected";
         deviceList[device->id] = QString("%1 (%2)").arg(device->name).arg(status);
+        ++it;
     }
     return deviceList;
 }
@@ -208,8 +211,9 @@ void DeviceManager::handleSerialClosed(int deviceId)
 
 void DeviceManager::handleDataAvailable()
 {
-    // 查找哪个设备有数据
-    for (auto device : devices) {
+    QMap<int, DeviceInfo*>::const_iterator it = devices.constBegin();
+    while (it != devices.constEnd()) {
+        DeviceInfo *device = it.value();
         if (device->serialWork->hasData()) {
             QByteArray data = device->serialWork->readAllData();
             if (!data.isEmpty()) {
@@ -218,6 +222,7 @@ void DeviceManager::handleDataAvailable()
                 emit deviceDataReceived(device->id, data);
             }
         }
+        ++it;
     }
 }
 

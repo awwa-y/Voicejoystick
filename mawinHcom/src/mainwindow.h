@@ -15,6 +15,7 @@
 #include <QTextEdit>
 #include "VoskWorker.h"
 #include "devicemanager.h"
+#include <QMessageBox>
 QT_BEGIN_NAMESPACE
 namespace Ui {
 class MainWindow;
@@ -35,6 +36,8 @@ public:
     int getbaud();
 public:
     bool m_hasPending;
+    void updateDeviceTabStatus(DeviceType type, bool added);
+    DeviceType getSelectedDeviceType();
 private slots:
     void onConnectButtonClicked();
     void onRefreshPortsClicked();
@@ -89,7 +92,10 @@ private:
     QThread      m_voskThread;
     VoskWorker   *m_voskWorker = nullptr;
 
-    DeviceManager *deviceManager;
+    ///设备变量
+    DeviceManager *deviceManager = nullptr;
+    // 设备类型到设备ID的映射
+    QMap<DeviceType, int> deviceTypeToId;
 signals:
     void openSerialRequest(QString portName, int baudRate, int deviceId);
     void closeSerialRequest(int deviceId);

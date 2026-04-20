@@ -1,3 +1,5 @@
 #include "log.h"
 
-log::log() {}
+log::log() {
+
+}

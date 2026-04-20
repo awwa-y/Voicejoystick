@@ -23,6 +23,10 @@ MainWindow::MainWindow(QWidget *parent)
     speedchange();
     connect(ui->connectbutton, &QPushButton::clicked, this, &MainWindow::onConnectButtonClicked);
 
+    //设备连接
+    deviceManager =new DeviceManager(this);
+    connect(ui->adddevice,&QPushButton::clicked,this,&MainWindow::onAddDeviceClicked);
+
     // 串口线程
     m_serialWorker->moveToThread(&m_serialThread);
     connect(&m_serialThread, &QThread::finished, m_serialWorker, &QObject::deleteLater);
@@ -36,9 +40,11 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_serialWorker, &SerialWork::serialClosed, this, &MainWindow::onSerialClosed);
     connect(m_joystick, &JoystickManager::joystickChanged, this, &MainWindow::changenewdata);
     connect(m_sendTimer, &QTimer::timeout, this, &MainWindow::sendPendingData);
-    connect(deviceManager, &DeviceManager::deviceStatusChanged, this, &MainWindow::onDeviceStatusChanged);
-    connect(deviceManager, &DeviceManager::deviceDataReceived, this, &MainWindow::onDeviceDataReceived);
-    connect(this, &MainWindow::sendDataRequest, deviceManager, &DeviceManager::sendData);
+    if (deviceManager) {
+        connect(deviceManager, &DeviceManager::deviceStatusChanged, this, &MainWindow::onDeviceStatusChanged);
+        connect(deviceManager, &DeviceManager::deviceDataReceived, this, &MainWindow::onDeviceDataReceived);
+        connect(this, &MainWindow::sendDataRequest, deviceManager, &DeviceManager::sendData);
+    }
 
     // 速度控制
     connect(ui->fastbutton, &QPushButton::clicked, this, &MainWindow::speedUp);
@@ -64,7 +70,6 @@ MainWindow::MainWindow(QWidget *parent)
     ui->voiceToggleButton->setCheckable(true);
     connect(ui->voiceToggleButton, &QPushButton::toggled, this, &MainWindow::toggleVoiceRecognition);
 
-    deviceManager = new DeviceManager(this);
 }
 
 MainWindow::~MainWindow()
@@ -110,11 +115,15 @@ void MainWindow::Qslwork_init()
         ui->connectbutton->setEnabled(false);
     }
     QStringList baudRates = {"4800","9600", "19200", "38400", "57600", "115200", "230400"};
+    QStringList devicename={"舵机","电机","传感器"};
     ui->bateCombox->addItems(baudRates);
+    ui->devicecombox->addItems(devicename);
+
 }
 
 void MainWindow::onConnectButtonClicked()
 {
+    if (!deviceManager) return;
     int activeDevice = deviceManager->getActiveDevice();
     if (m_isConnected) {
         emit closeSerialRequest(activeDevice);
@@ -190,6 +199,7 @@ void MainWindow::changenewdata(int newx, int newy)
 
 void MainWindow::sendPendingData()
 {
+    if (!deviceManager) return;
     int currentDevice = deviceManager->getActiveDevice();
     if (!m_hasPending) return;
 
@@ -218,12 +228,65 @@ void MainWindow::speedDown()
 
 void MainWindow::onAddDeviceClicked()
 {
+    QString devicename;
+    DeviceType type = getSelectedDeviceType();
 
+    // 检查是否选择了串口
+    QString portName = ui->comCombox->currentText();
+    if (portName.isEmpty()) {
+        QMessageBox::warning(this, "警告", "请先选择串口");
+        return;
+    }
+
+    // 检查波特率
+    bool ok;
+    int baudRate = ui->bateCombox->currentText().toInt();
+    if (!ok) {
+        QMessageBox::warning(this, "警告", "无效的波特率");
+        return;
+    }
+    deviceManager->addDevice(ui->comCombox->currentText(),
+                             ui->bateCombox->currentText().toInt(),
+                             devicename,
+                             type);
+    int deviceId = deviceManager->addDevice(
+        ui->comCombox->currentText(),
+        ui->bateCombox->currentText().toInt(),
+        devicename,
+        type
+        );
+
+    deviceTypeToId[type] = deviceId;
+    QMessageBox::information(this, "成功",
+                             QString("设备添加成功！ID: %1, 波特率: %2").arg(deviceId).arg(baudRate));
+    updateDeviceTabStatus(type, true);
+    ui->connectbutton->setEnabled(true);
 }
 
 void MainWindow::onRemoveDeviceClicked()
 {
+    DeviceType type = getSelectedDeviceType();
 
+    if (!deviceTypeToId.contains(type)) {
+        QMessageBox::information(this, "提示", "该类型设备未添加");
+        return;
+    }
+
+    int deviceId = deviceTypeToId[type];
+
+    // 断开连接
+    emit closeSerialRequest(deviceId);
+
+    // 删除设备
+    deviceManager->removeDevice(deviceId);
+    deviceTypeToId.remove(type);
+
+    QMessageBox::information(this, "成功", "设备已删除");
+
+    // 如果没有设备了，禁用连接按钮
+    if (deviceTypeToId.isEmpty()) {
+        ui->connectbutton->setEnabled(false);
+    }
 }
 
 void MainWindow::onDeviceComboBoxChanged(int index)
@@ -250,7 +313,9 @@ void MainWindow::speedchange()
 {
     QString text = QString::number(m_speedValue);
     ui->speedValueLB->setText(" " + text);
-    sendPendingData();   // 立即发送
+    if (deviceManager) {
+        sendPendingData();   // 立即发送
+    }
 }
 void MainWindow::onForwardButtonClicked()
 {
@@ -311,4 +376,40 @@ void MainWindow::onVoiceError(const QString &err)
     ui->voiceResultEdit->append(QString("错误：%1").arg(err));
     ui->voiceStatusLabel->setText("语音状态：出错");
     ui->voiceToggleButton->setChecked(false);
+}
+void MainWindow::updateDeviceTabStatus(DeviceType type, bool added)
+{
+    switch (type) {
+    case DEVICE_TYPE_MOTOR:
+        ui->tabWidget->setTabText(0, added ? "电机控制 (已添加)" : "电机控制 (未添加)");
+        ui->motorControlWidget->setEnabled(added && m_isConnected);
+        break;
+    case DEVICE_TYPE_SERVO:
+        ui->tabWidget->setTabText(1, added ? "舵机控制 (已添加)" : "舵机控制 (未添加)");
+        ui->servoControlWidget->setEnabled(added && m_isConnected);
+        break;
+    case DEVICE_TYPE_HUMIDITY_SENSOR:
+        ui->tabWidget->setTabText(2, added ? "温湿度传感器 (已添加)" : "温湿度传感器 (未添加)");
+        ui->sensorControlWidget->setEnabled(added && m_isConnected);
+        break;
+    }
+}
+DeviceType MainWindow::getSelectedDeviceType(){
+    QString devicename;
+    DeviceType deviceType = DEVICE_TYPE_UNKNOWN;
+    if(ui->devicecombox->currentText()=="舵机"){
+        devicename="CMD_TYPE_SERVO_CONTROL";
+        deviceType=DEVICE_TYPE_SERVO;//舵机
+    }
+    else if(ui->devicecombox->currentText()=="电机"){
+        devicename="CMD_TYPE_MOTOR_CONTROL";
+        deviceType = DEVICE_TYPE_MOTOR;   // 电机类型
+    }else if(ui->devicecombox->currentText()=="传感器"){
+        devicename="CMD_TYPE_SENSOR";
+        deviceType = DEVICE_TYPE_HUMIDITY_SENSOR;  // 传感器类型
+    }
+    if (deviceTypeToId.contains(deviceType)) {
+        QMessageBox::information(this, "提示", "该类型设备已添加");
+        return deviceType;
+    }
 }

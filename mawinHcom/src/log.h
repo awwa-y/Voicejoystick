@@ -5,6 +5,8 @@ class log
 {
 public:
     log();
+private:
+    int a;
 };
 
 #endif // LOG_H
