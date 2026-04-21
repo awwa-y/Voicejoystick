@@ -147,7 +147,7 @@ QMap<int, QString> DeviceManager::getDeviceList()
     while (it != devices.constEnd()) {
         DeviceInfo *device = it.value();
         QString status = device->isConnected ? "Connected" : "Disconnected";
-        deviceList[device->id] = QString("%1 (%2)").arg(device->name).arg(status);
+        deviceList[device->id] = QString("%1 (%2)").arg(device->name,status);
         ++it;
     }
     return deviceList;
@@ -180,6 +180,24 @@ bool DeviceManager::isDeviceConnected(int deviceId)
         return devices[deviceId]->isConnected;
     }
     return false;
+}
+
+void DeviceManager::setDeviceConnected(int deviceId, bool connected)
+{
+    if (devices.contains(deviceId)) {
+        devices[deviceId]->isConnected = connected;
+        devices[deviceId]->status = connected ? "Connected" : "Disconnected";
+        emit deviceStatusChanged(deviceId, devices[deviceId]->status);
+    }
+}
+
+bool DeviceManager::isDeviceConnected(int deviceId) const
+{
+    if (devices.contains(deviceId)) {
+        return devices[deviceId]->isConnected;
+    }
+    return false;
+
 }
 
 void DeviceManager::handleSerialOpened(int deviceId)
