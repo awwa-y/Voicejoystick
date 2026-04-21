@@ -123,26 +123,30 @@ void MainWindow::Qslwork_init()
 
 void MainWindow::onConnectButtonClicked()
 {
-    if (!deviceManager) return;
-    int activeDevice = deviceManager->getActiveDevice();
+
     if (m_isConnected) {
-        emit closeSerialRequest(activeDevice);
+        for (auto deviceId : devicetypeIdmap.values()) {
+            emit closeSerialRequest(deviceId);
+        }
+        m_isConnected = false;
+        ui->connectbutton->setText("连接");
     } else {
-        QString port = ui->comCombox->currentText();
-        if (port.isEmpty() || port == "无可用串口") {
-            qDebug() << "请选择有效串口";
+        if (devicetypeIdmap.isEmpty()) {
+            QMessageBox::warning(this, "警告", "请先添加设备");
             return;
         }
-        bool ok;
-        int baud = ui->bateCombox->currentText().toInt(&ok);
-        if (!ok) {
-            qDebug() << "无效波特率";
-            return;
+
+        ui->connectbutton->setText("连接中...");
+        ui->connectbutton->setEnabled(false);
+
+        for (auto deviceId : devicetypeIdmap.values()) {
+            emit openSerialRequest(
+                deviceManager->getDevicePortName(deviceId),
+                deviceManager->getDeviceBaudRate(deviceId),
+                deviceId
+                );
         }
-        emit openSerialRequest(port, baud,activeDevice);
     }
-    ui->connectbutton->setText("连接中...");
-    ui->connectbutton->setEnabled(false);
 }
 
 void MainWindow::onRefreshPortsClicked()
@@ -172,8 +176,34 @@ void MainWindow::onSerialError(int deviceId, const QString &error)
     qDebug() << "串口错误:" << error;
 }
 
-void MainWindow::onSerialOpened()
+void MainWindow::onSerialOpened(int deviceId)
 {
+    if (deviceManager) {
+        // 假设DeviceManager有一个方法来更新设备连接状态
+        deviceManager->setDeviceConnected(deviceId, true);
+    }
+
+    qDebug() << "设备" << deviceId << "连接成功";
+
+    // 检查是否所有设备都已连接
+    bool allConnected = true;
+    for (auto deviceId : devicetypeIdmap.values()) {
+        if (!deviceManager->isDeviceConnected(deviceId)) {
+            allConnected = false;
+            break;
+        }
+    }
+
+    if (allConnected) {
+        m_isConnected = true;
+        ui->connectbutton->setText("断开");
+        ui->connectbutton->setEnabled(true);
+
+        // 启用控制组件
+        for (auto type : devicetypeIdmap.keys()) {
+            updateDeviceTabStatus(type, true);
+        }
+    }
     ui->connectbutton->setText("断开");
     ui->comCombox->setEnabled(false);
     ui->bateCombox->setEnabled(false);
@@ -240,15 +270,11 @@ void MainWindow::onAddDeviceClicked()
 
     // 检查波特率
     bool ok;
-    int baudRate = ui->bateCombox->currentText().toInt();
+    int baudRate = ui->bateCombox->currentText().toInt(&ok);
     if (!ok) {
         QMessageBox::warning(this, "警告", "无效的波特率");
         return;
     }
-    deviceManager->addDevice(ui->comCombox->currentText(),
-                             ui->bateCombox->currentText().toInt(),
-                             devicename,
-                             type);
     int deviceId = deviceManager->addDevice(
         ui->comCombox->currentText(),
         ui->bateCombox->currentText().toInt(),
@@ -256,7 +282,7 @@ void MainWindow::onAddDeviceClicked()
         type
         );
 
-    deviceTypeToId[type] = deviceId;
+    devicetypeIdmap[type] = deviceId;
     QMessageBox::information(this, "成功",
                              QString("设备添加成功！ID: %1, 波特率: %2").arg(deviceId).arg(baudRate));
     updateDeviceTabStatus(type, true);
@@ -267,24 +293,24 @@ void MainWindow::onRemoveDeviceClicked()
 {
     DeviceType type = getSelectedDeviceType();
 
-    if (!deviceTypeToId.contains(type)) {
+    if (!devicetypeIdmap.contains(type)) {
         QMessageBox::information(this, "提示", "该类型设备未添加");
         return;
     }
 
-    int deviceId = deviceTypeToId[type];
+    int deviceId = devicetypeIdmap[type];
 
     // 断开连接
     emit closeSerialRequest(deviceId);
 
     // 删除设备
     deviceManager->removeDevice(deviceId);
-    deviceTypeToId.remove(type);
+    devicetypeIdmap.remove(type);
 
     QMessageBox::information(this, "成功", "设备已删除");
 
     // 如果没有设备了，禁用连接按钮
-    if (deviceTypeToId.isEmpty()) {
+    if (devicetypeIdmap.isEmpty()) {
         ui->connectbutton->setEnabled(false);
     }
 }
@@ -392,8 +418,12 @@ void MainWindow::updateDeviceTabStatus(DeviceType type, bool added)
         ui->tabWidget->setTabText(2, added ? "温湿度传感器 (已添加)" : "温湿度传感器 (未添加)");
         ui->sensorControlWidget->setEnabled(added && m_isConnected);
         break;
+    case DEVICE_TYPE_UNKNOWN:
+        qDebug()<<"未知设备";
+        break;
     }
 }
+
 DeviceType MainWindow::getSelectedDeviceType(){
     QString devicename;
     DeviceType deviceType = DEVICE_TYPE_UNKNOWN;
@@ -408,8 +438,45 @@ DeviceType MainWindow::getSelectedDeviceType(){
         devicename="CMD_TYPE_SENSOR";
         deviceType = DEVICE_TYPE_HUMIDITY_SENSOR;  // 传感器类型
     }
-    if (deviceTypeToId.contains(deviceType)) {
+    if (devicetypeIdmap.contains(deviceType)) {
         QMessageBox::information(this, "提示", "该类型设备已添加");
-        return deviceType;
+
     }
+    return deviceType;
+}
+QString MainWindow::getDeviceNameByType(DeviceType type)
+{
+    switch (type) {
+    case DEVICE_TYPE_MOTOR:
+        return "CMD_TYPE_MOTOR_CONTROL";
+    case DEVICE_TYPE_SERVO:
+        return "CMD_TYPE_SERVO_CONTROL";
+    case DEVICE_TYPE_HUMIDITY_SENSOR:
+        return "CMD_TYPE_SENSOR";
+    default:
+        return "CMD_TYPE_UNKNOWN";
+    }
+}
+DeviceType DeviceManager::getDeviceType(int deviceId) const
+{
+    if (devices.contains(deviceId)) {
+        return devices[deviceId]->type;
+    }
+    return DEVICE_TYPE_UNKNOWN;
+}
+
+QString DeviceManager::getDevicePortName(int deviceId) const
+{
+    if (devices.contains(deviceId)) {
+        return devices[deviceId]->portName;
+    }
+    return "";
+}
+
+int DeviceManager::getDeviceBaudRate(int deviceId) const
+{
+    if (devices.contains(deviceId)) {
+        return devices[deviceId]->baudRate;
+    }
+    return 0;
 }
