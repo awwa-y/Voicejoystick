@@ -15,7 +15,9 @@ enum DeviceType {
     DEVICE_TYPE_SERVO = 2,
     DEVICE_TYPE_MOTOR = 3
 };
-enum CommandType {
+
+enum CommandType//命令
+{
     CMD_TYPE_UNKNOWN = 0,
     CMD_TYPE_SERVO_CONTROL = 1,// 舵机
     CMD_TYPE_MOTOR_CONTROL = 2, // 电机
@@ -35,11 +37,18 @@ public:
     bool sendCommandByType(DeviceType deviceType, const QByteArray &data);
     bool broadcastCommand(const QByteArray &data);
     QMap<int, QString> getDeviceList();
-    QString getDeviceStatus(int deviceId);
     void setActiveDevice(int deviceId);
     int getActiveDevice();
     bool isDeviceConnected(int deviceId);
+    void setDeviceConnected(int deviceId, bool connected);
+    bool isDeviceConnected(int deviceId) const;
 
+
+    //获取参数ds
+    QString getDeviceStatus(int deviceId);
+    DeviceType getDeviceType(int deviceId) const;
+    QString getDevicePortName(int deviceId) const;
+    int getDeviceBaudRate(int deviceId) const;
 signals:
     void deviceStatusChanged(int deviceId, const QString &status);
     void deviceDataReceived(int deviceId, const QByteArray &data);
