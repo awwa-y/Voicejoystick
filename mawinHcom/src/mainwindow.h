@@ -38,6 +38,7 @@ public:
     bool m_hasPending;
     void updateDeviceTabStatus(DeviceType type, bool added);
     DeviceType getSelectedDeviceType();
+    QString getDeviceNameByType(DeviceType type);
 private slots:
     void onConnectButtonClicked();
     void onRefreshPortsClicked();
@@ -47,7 +48,7 @@ private slots:
     void onSpeedDownButtonClicked();
     void onDataReceived(int deviceId, const QByteArray &data);
     void onSerialError(int deviceId, const QString &error);
-    void onSerialOpened();
+    void onSerialOpened(int deviceId);
     void onSerialClosed();
     void changenewdata(int newx,int newy);
     void sendPendingData();
@@ -95,7 +96,7 @@ private:
     ///设备变量
     DeviceManager *deviceManager = nullptr;
     // 设备类型到设备ID的映射
-    QMap<DeviceType, int> deviceTypeToId;
+    QMap<DeviceType, int> devicetypeIdmap;
 signals:
     void openSerialRequest(QString portName, int baudRate, int deviceId);
     void closeSerialRequest(int deviceId);
