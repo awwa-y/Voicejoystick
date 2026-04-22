@@ -39,6 +39,8 @@ public:
     void updateDeviceTabStatus(DeviceType type, bool added);
     DeviceType getSelectedDeviceType();
     QString getDeviceNameByType(DeviceType type);
+    void onMotorAngleSlider_valueChanged(int value);
+    void onReadSensorClicked();
 private slots:
     void onConnectButtonClicked();
     void onRefreshPortsClicked();
