@@ -70,6 +70,11 @@ MainWindow::MainWindow(QWidget *parent)
     ui->voiceToggleButton->setCheckable(true);
     connect(ui->voiceToggleButton, &QPushButton::toggled, this, &MainWindow::toggleVoiceRecognition);
 
+
+    //命令控制
+    connect(ui->servoAngleSlider, &QSlider::valueChanged, this, &MainWindow::onMotorAngleSlider_valueChanged);
+    connect(ui->readSensorButton, &QPushButton::clicked, this, &MainWindow::onReadSensorClicked);
+
 }
 
 MainWindow::~MainWindow()
@@ -168,7 +173,7 @@ void MainWindow::onRefreshPortsClicked()
 void MainWindow::onDataReceived(int deviceId, const QByteArray &data)
 {
     // 根据需要实现
-    Q_UNUSED(data);
+    Q_UNUSED(data)
 }
 
 void MainWindow::onSerialError(int deviceId, const QString &error)
@@ -244,8 +249,16 @@ void MainWindow::sendPendingData()
 
 void MainWindow::speedUp()
 {
-    m_speedValue += 10;
-    speedchange();
+    if (m_speedValue < 100) {
+        m_speedValue += 10;
+        speedchange();
+
+        if (devicetypeIdmap.contains(DEVICE_TYPE_MOTOR)) {
+            int deviceId = devicetypeIdmap[DEVICE_TYPE_MOTOR];
+            QByteArray command = CommandProcessor::createMotorSpeedCommand(m_speedValue);
+            emit sendDataRequest(deviceId, command);
+        }
+    }
 }
 
 void MainWindow::speedDown()
@@ -253,6 +266,12 @@ void MainWindow::speedDown()
     if (m_speedValue >= 10) {
         m_speedValue -= 10;
         speedchange();
+
+        if (devicetypeIdmap.contains(DEVICE_TYPE_MOTOR)) {
+            int deviceId = devicetypeIdmap[DEVICE_TYPE_MOTOR];
+            QByteArray command = CommandProcessor::createMotorSpeedCommand(m_speedValue);
+            emit sendDataRequest(deviceId, command);
+        }
     }
 }
 
@@ -328,6 +347,40 @@ void MainWindow::onDeviceStatusChanged(int deviceId, const QString &status)
 void MainWindow::onDeviceDataReceived(int deviceId, const QByteArray &data)
 {
 
+    if (!deviceManager) return;
+
+    DeviceType type = deviceManager->getDeviceType(deviceId);
+
+    switch (type) {
+    case DEVICE_TYPE_HUMIDITY_SENSOR:
+    {
+        // 解析温湿度数据（假设数据格式：温度(4字节) + 湿度(4字节)）
+        if (data.size() >= 8) {
+            float temperature = *reinterpret_cast<const float*>(data.constData());
+            float humidity = *reinterpret_cast<const float*>(data.constData() + 4);
+
+            ui->temperatureLabel->setText(QString("温度: %1°C").arg(temperature, 0, 'f', 1));
+            ui->humidityLabel->setText(QString("湿度: %1%").arg(humidity, 0, 'f', 1));
+        }
+    }
+    break;
+    case DEVICE_TYPE_MOTOR:
+    {
+        // 处理电机反馈
+        qDebug()<<"Motor feedback:" << data.toHex(' ');
+    }
+    break;
+    case DEVICE_TYPE_SERVO:
+    {
+        // 处理舵机反馈
+        qDebug()<< "Servo feedback:" << data.toHex(' ');
+    }
+    case DEVICE_TYPE_UNKNOWN:
+    {
+        qDebug()<<"Unknowm feedback"<< data.toHex(' ');
+    }
+    break;
+    }
 }
 
 void MainWindow::onSendCommandClicked()
@@ -479,4 +532,25 @@ int DeviceManager::getDeviceBaudRate(int deviceId) const
         return devices[deviceId]->baudRate;
     }
     return 0;
+}
+//命令控制
+void MainWindow::onMotorAngleSlider_valueChanged(int value)
+{
+    m_speedValue = value;
+    speedchange();
+
+    // 发送速度控制命令
+    if (devicetypeIdmap.contains(DEVICE_TYPE_MOTOR)) {
+        int deviceId = devicetypeIdmap[DEVICE_TYPE_MOTOR];
+        QByteArray command = CommandProcessor::createMotorSpeedCommand(value);
+        emit sendDataRequest(deviceId, command);
+    }
+}
+void MainWindow::onReadSensorClicked()
+{
+    if (devicetypeIdmap.contains(DEVICE_TYPE_HUMIDITY_SENSOR)) {
+        int deviceId = devicetypeIdmap[DEVICE_TYPE_HUMIDITY_SENSOR];
+        QByteArray command = CommandProcessor::createSensorReadCommand();
+        emit sendDataRequest(deviceId, command);
+    }
 }
