@@ -8,6 +8,7 @@
 #include <QTextEdit>
 #include <QPushButton>
 #include "commandprocessor.h"
+#include "log.h"
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
     , ui(new Ui::MainWindow)
@@ -257,6 +258,7 @@ void MainWindow::speedUp()
             int deviceId = devicetypeIdmap[DEVICE_TYPE_MOTOR];
             QByteArray command = CommandProcessor::createMotorSpeedCommand(m_speedValue);
             emit sendDataRequest(deviceId, command);
+            Logger::info(QString("发送电机速度命令: %1").arg(m_speedValue));
         }
     }
 }
@@ -271,6 +273,7 @@ void MainWindow::speedDown()
             int deviceId = devicetypeIdmap[DEVICE_TYPE_MOTOR];
             QByteArray command = CommandProcessor::createMotorSpeedCommand(m_speedValue);
             emit sendDataRequest(deviceId, command);
+            Logger::info(QString("发送电机速度命令: %1").arg(m_speedValue));
         }
     }
 }
@@ -341,7 +344,26 @@ void MainWindow::onDeviceComboBoxChanged(int index)
 
 void MainWindow::onDeviceStatusChanged(int deviceId, const QString &status)
 {
+    if (!deviceManager) return;
 
+    DeviceType type = deviceManager->getDeviceType(deviceId);
+    QString deviceName;
+
+    switch (type) {
+    case DEVICE_TYPE_MOTOR:
+        deviceName = "电机";
+        break;
+    case DEVICE_TYPE_SERVO:
+        deviceName = "舵机";
+        break;
+    case DEVICE_TYPE_HUMIDITY_SENSOR:
+        deviceName = "传感器";
+        break;
+    default:
+        deviceName = "设备";
+    }
+
+    Logger::info(QString("%1 (ID:%2) 状态: %3").arg(deviceName).arg(deviceId).arg(status));
 }
 
 void MainWindow::onDeviceDataReceived(int deviceId, const QByteArray &data)
@@ -351,10 +373,13 @@ void MainWindow::onDeviceDataReceived(int deviceId, const QByteArray &data)
 
     DeviceType type = deviceManager->getDeviceType(deviceId);
 
+    // 记录日志
+    Logger::info(QString("收到设备 %1 数据: %2").arg(deviceId).arg(data.toHex(' ')));
+
     switch (type) {
     case DEVICE_TYPE_HUMIDITY_SENSOR:
     {
-        // 解析温湿度数据（假设数据格式：温度(4字节) + 湿度(4字节)）
+        // 解析温湿度数据
         if (data.size() >= 8) {
             float temperature = *reinterpret_cast<const float*>(data.constData());
             float humidity = *reinterpret_cast<const float*>(data.constData() + 4);
@@ -366,19 +391,25 @@ void MainWindow::onDeviceDataReceived(int deviceId, const QByteArray &data)
     break;
     case DEVICE_TYPE_MOTOR:
     {
-        // 处理电机反馈
-        qDebug()<<"Motor feedback:" << data.toHex(' ');
+        // 处理电机反馈数据
+        if (data.size() >= 2) {
+            int speed = static_cast<unsigned char>(data[0]);
+            int status = static_cast<unsigned char>(data[1]);
+            Logger::info(QString("电机状态 - 速度: %1, 状态: %2").arg(speed).arg(status));
+        }
     }
     break;
     case DEVICE_TYPE_SERVO:
     {
-        // 处理舵机反馈
-        qDebug()<< "Servo feedback:" << data.toHex(' ');
+        // 处理舵机反馈数据
+        if (data.size() >= 2) {
+            int angle = static_cast<unsigned char>(data[0]);
+            int status = static_cast<unsigned char>(data[1]);
+            Logger::info(QString("舵机状态 - 角度: %1°, 状态: %2").arg(angle).arg(status));
+        }
     }
     case DEVICE_TYPE_UNKNOWN:
-    {
-        qDebug()<<"Unknowm feedback"<< data.toHex(' ');
-    }
+
     break;
     }
 }
@@ -442,6 +473,9 @@ void MainWindow::onVoiceCommand(const QString &cmd)
         ui->voiceResultEdit->append("-> 执行左转（摇杆已移动）");
     } else if (cmd == "右转") {
         ui->voiceResultEdit->append("-> 执行右转（摇杆已移动）");
+    }
+    else if (cmd.contains("读取") || cmd.contains("传感器")) {
+        onReadSensorClicked();
     }
 }
 
@@ -552,5 +586,6 @@ void MainWindow::onReadSensorClicked()
         int deviceId = devicetypeIdmap[DEVICE_TYPE_HUMIDITY_SENSOR];
         QByteArray command = CommandProcessor::createSensorReadCommand();
         emit sendDataRequest(deviceId, command);
+        Logger::info("发送传感器读取命令");
     }
 }
