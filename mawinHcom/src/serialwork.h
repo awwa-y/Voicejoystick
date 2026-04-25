@@ -25,7 +25,7 @@ signals:
     void errorOccurred(int deviceId, const QString &error);
     void serialOpened(int deviceId);
     void serialClosed(int deviceId);
-    void newDataAvailable();
+    void newDataAvailable(int deviceId);
 
 private slots:
     void handleReadyRead();
@@ -35,6 +35,7 @@ public:
     QSerialPort *m_serial;
 private:
     RingBuffer *ringBuffer;
+    int m_deviceId;
 };
 
 

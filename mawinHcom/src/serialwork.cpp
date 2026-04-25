@@ -1,7 +1,8 @@
 #include "serialwork.h"
 
 SerialWork::SerialWork(int deviceId,QObject *parent)
-    :QObject(parent), m_serial(new QSerialPort(this)){
+    :QObject(parent), m_serial(new QSerialPort(this)),ringBuffer(new RingBuffer(4096, this))
+{
     connect(m_serial, &QSerialPort::readyRead, this, &SerialWork::handleReadyRead);
     connect(m_serial, &QSerialPort::errorOccurred, this, &SerialWork::handleError);
 
@@ -70,7 +71,7 @@ void SerialWork::handleReadyRead()
     if (!data.isEmpty()) {
         ringBuffer->write(data);
         // 仅发送通知信号，无数据拷贝
-        emit newDataAvailable();
+        emit newDataAvailable(m_deviceId);
     }
 }
 

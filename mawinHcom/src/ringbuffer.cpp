@@ -2,7 +2,7 @@
 #include <string.h>
 
 RingBuffer::RingBuffer(int size, QObject *parent)
-    : QObject(parent), capacity(size), head(0), tail(0), atomicCount(0)
+    : QObject(parent), capacity(size), head(0), tail(0), count(0)
 {
     buffer = new char[capacity];
 }
@@ -12,58 +12,135 @@ RingBuffer::~RingBuffer()
     delete[] buffer;
 }
 
-bool RingBuffer::write(const QByteArray &data)
+int RingBuffer::write(const char *data, int len, WritePolicy policy)
 {
     QMutexLocker locker(&mutex);
+    
+    if (len <= 0) {
+        return 0;
+    }
+    
+    int written = 0;
+    int remaining = len;
+    
+    while (remaining > 0) {
+        int free = freeSpace();
+        
+        if (free <= 0) {
+            switch (policy) {
+            case OverwriteOld: {
+                // 覆盖旧数据，移动 tail
+                int overwrite = remaining;
+                tail = (tail + overwrite) % capacity;
+                count.fetch_sub(overwrite);
+                free = remaining;
+                break;
+            }
+            case Block:
+                // 阻塞（简单实现，实际可能需要条件变量）
+                return written;
 
-    int dataSize = data.size();
+            case DiscardNew:
+                // 丢弃新数据
+                return written;
 
-    // 清空缓冲区
-    head = 0;
-    tail = 0;
+            default:
+                // 默认情况，防止编译器警告
+                return written;
+            }
+        }
+        
+        int writeSize = qMin(remaining, free);
+        int writeToEnd = qMin(writeSize, capacity - head);
+        
+        // 写入数据
+        memcpy(buffer + head, data + written, writeToEnd);
+        head = (head + writeToEnd) % capacity;
+        
+        if (writeSize > writeToEnd) {
+            int writeFromStart = writeSize - writeToEnd;
+            memcpy(buffer, data + written + writeToEnd, writeFromStart);
+            head = writeFromStart;
+        }
+        
+        written += writeSize;
+        remaining -= writeSize;
+        count.fetch_add(writeSize);
+    }
+    
+    emit newDataAvailable();
+    return written;
+}
 
-    // 复制数据
-    int copySize = qMin(dataSize, capacity);
-    memcpy(buffer, data.constData(), copySize);
-    head = copySize;
 
-    // 使用ref和dref操作原子变量
-    atomicCount.storeRelease(copySize);
+int RingBuffer::write(const QByteArray &data, WritePolicy policy)
+{
+    return write(data.constData(), data.size(), policy);
+}
 
-    return true;
+int RingBuffer::read(char *dest, int maxLen)
+{
+    QMutexLocker locker(&mutex);
+    
+    if (maxLen <= 0 || count.load() == 0) {
+        return 0;
+    }
+    
+    int readSize = qMin(maxLen, count.load());
+    int readFromEnd = qMin(readSize, capacity - tail);
+    
+    // 读取数据
+    memcpy(dest, buffer + tail, readFromEnd);
+    tail = (tail + readFromEnd) % capacity;
+    
+    if (readSize > readFromEnd) {
+        int readFromStart = readSize - readFromEnd;
+        memcpy(dest + readFromEnd, buffer, readFromStart);
+        tail = readFromStart;
+    }
+    
+    count.fetch_sub(readSize);
+    return readSize;
 }
 
 QByteArray RingBuffer::readAll()
 {
     QMutexLocker locker(&mutex);
-
-    if (head == tail) {
+    
+    if (count.load() == 0) {
         return QByteArray();
     }
-
+    
     QByteArray result;
-    if (head > tail) {
-        result = QByteArray(buffer + tail, head - tail);
-    } else {
-        result = QByteArray(buffer + tail, capacity - tail);
-        result.append(buffer, head);
-    }
-
-    head = 0;
-    tail = 0;
-    atomicCount.storeRelease(0);
-
+    result.resize(count.load());
+    
+    read(result.data(), result.size());
     return result;
 }
 
-bool RingBuffer::hasData()
+bool RingBuffer::hasData() const
 {
-    return atomicCount.loadAcquire() > 0;
+    return count.load() > 0;
 }
 
-int RingBuffer::size()
+int RingBuffer::size() const
 {
-    return atomicCount.loadAcquire();
+    return count.load();
+}
+
+int RingBuffer::freeSpace() const
+{
+    return capacity - count.load();
+}
+
+bool RingBuffer::isEmpty() const
+{
+    return count.load() == 0;
+}
+
+bool RingBuffer::isFull() const
+{
+    return count.load() >= capacity;
 }
 
 void RingBuffer::clear()
@@ -71,5 +148,5 @@ void RingBuffer::clear()
     QMutexLocker locker(&mutex);
     head = 0;
     tail = 0;
-    atomicCount.storeRelease(0);
+    count.store(0);
 }

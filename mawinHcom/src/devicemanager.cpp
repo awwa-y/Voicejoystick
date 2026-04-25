@@ -227,11 +227,10 @@ void DeviceManager::handleSerialClosed(int deviceId)
     }
 }
 
-void DeviceManager::handleDataAvailable()
+void DeviceManager::handleDataAvailable(int deviceId)
 {
-    QMap<int, DeviceInfo*>::const_iterator it = devices.constBegin();
-    while (it != devices.constEnd()) {
-        DeviceInfo *device = it.value();
+    if (devices.contains(deviceId)) {
+        DeviceInfo *device = devices[deviceId];
         if (device->serialWork->hasData()) {
             QByteArray data = device->serialWork->readAllData();
             if (!data.isEmpty()) {
@@ -240,7 +239,6 @@ void DeviceManager::handleDataAvailable()
                 emit deviceDataReceived(device->id, data);
             }
         }
-        ++it;
     }
 }
 

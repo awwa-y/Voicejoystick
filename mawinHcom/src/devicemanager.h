@@ -65,7 +65,7 @@ signals:
 public slots:
     void handleSerialOpened(int deviceId);
     void handleSerialClosed(int deviceId);
-    void handleDataAvailable();
+    void handleDataAvailable(int deviceId);
     void handleSerialError(int deviceId, const QString &error);
 
 private:
