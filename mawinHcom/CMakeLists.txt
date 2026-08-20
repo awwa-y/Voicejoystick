@@ -29,6 +29,8 @@ qt_add_executable(mawinHcom
     ringbuffer.h
     ringbuffer.cpp
     devicemanager.h devicemanager.cpp
+    protocolframe.h
+    protocolframe.cpp
 )
 
 # Vosk 配置
@@ -58,14 +60,19 @@ add_custom_command(TARGET mawinHcom POST_BUILD
     COMMENT "Copying libvosk.dll"
 )
 
-# 复制 MinGW 运行时 DLL（如果上面没有静态链接 winpthread）
+# 复制 MinGW 运行时 DLL —— 必须从编译器目录复制，绝不能用 vosk 自带的！
+# 【教训】vosk 发行包里的 libstdc++-6.dll 是老版 GCC 编译的，缺少 Qt6.9(GCC13)
+# 需要的 __glibcxx_assert_fail 符号，会导致"无法定位程序输入点"启动崩溃；
+# 且旧 DLL 会被 copy_if_different 每次构建重新覆盖，造成"每次都要手动
+# windeployqt"的死循环。新版 libstdc++ 向下兼容，libvosk.dll 用它也正常。
+get_filename_component(CXX_BIN_DIR ${CMAKE_CXX_COMPILER} DIRECTORY)
 add_custom_command(TARGET mawinHcom POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        ${VOSK_DIR}/libgcc_s_seh-1.dll
-        ${VOSK_DIR}/libstdc++-6.dll
-        ${VOSK_DIR}/libwinpthread-1.dll
+        ${CXX_BIN_DIR}/libgcc_s_seh-1.dll
+        ${CXX_BIN_DIR}/libstdc++-6.dll
+        ${CXX_BIN_DIR}/libwinpthread-1.dll
         $<TARGET_FILE_DIR:mawinHcom>
-    COMMENT "Copying MinGW runtime DLLs"
+    COMMENT "Copying MinGW runtime DLLs (from toolchain, NOT vosk)"
 )
 
 # 复制模型文件夹
@@ -75,6 +82,19 @@ add_custom_command(TARGET mawinHcom POST_BUILD
         $<TARGET_FILE_DIR:mawinHcom>/model
     COMMENT "Copying Vosk model"
 )
+
+# 构建后自动运行 windeployqt：把 Qt 运行库(Qt6*.dll/platforms插件等)
+# 部署到 exe 旁边，这样不用 Qt Creator、直接双击 exe 也能跑。
+# （原来的 qt_generate_deploy_app_script 挂在 install 阶段，
+#  从不执行 cmake --install 就永远不会部署，等于没写）
+if(WIN32)
+    add_custom_command(TARGET mawinHcom POST_BUILD
+        COMMAND Qt6::windeployqt
+            $<TARGET_FILE:mawinHcom>
+            --no-translations
+        COMMENT "Deploying Qt runtime DLLs (windeployqt)"
+    )
+endif()
 
 # 部署脚本
 include(GNUInstallDirs)
