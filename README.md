@@ -22,6 +22,10 @@ AA + cmdType + deviceType + dataLen + data + checksum + 55
 - 命令类型：控制(0x01) / 电机速度(0x02) / 舵机角度(0x04) / 传感器读取(0x05) / 紧急停止(0x06)
 - 接收侧状态机逐字节扫描帧头，校验和 + 帧尾双重校验，错误传播限制在一帧以内
 
+## 下位机
+
+STM32F103 解析控制帧并驱动外设：舵机（0~180° 角度指令）、电机（速度指令）、温湿度传感器（定时上报）。串口参数 115200, 8N1。
+
 ## 架构
 
 ```
@@ -45,7 +49,7 @@ UI 主线程(QMainWindow/QML风格QSS)
 
 环境：Qt 6.x（MinGW）+ CMake。
 
-Vosk 库与语音模型体积较大，不在仓库中：从 [Releases](../../releases) 下载完整包（已含全部依赖），或自行下载 [Vosk](https://github.com/alphacep/vosk-api) 库放入 `libs/`、中文模型放入 `model/`。
+Vosk 库与语音模型体积较大，不在仓库中：从 [Releases](../../releases) 下载完整包（已含全部依赖），或自行下载 [Vosk](https://github.com/alphacep/vosk-api) 库（vosk-win64-0.3.45）放入 `libs/`、中文小模型（vosk-model-small-cn-0.22）放入 `model/`。
 
 ```
 cmake -S . -B build -G "MinGW Makefiles" -DCMAKE_PREFIX_PATH=<Qt路径>
