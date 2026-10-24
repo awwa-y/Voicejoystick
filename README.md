@@ -47,7 +47,7 @@ UI 主线程(QMainWindow/QML风格QSS)
 
 ## 构建
 
-环境：Qt 6.x（MinGW）+ CMake。
+环境：Qt 6.3（MinGW）+ CMake。
 
 Vosk 库与语音模型体积较大，不在仓库中：从 [Releases](../../releases) 下载完整包（已含全部依赖），或自行下载 [Vosk](https://github.com/alphacep/vosk-api) 库（vosk-win64-0.3.45）放入 `libs/`、中文小模型（vosk-model-small-cn-0.22）放入 `model/`。
 
