@@ -1,6 +1,7 @@
 #include "VoskWorker.h"
 #include "vosk_api.h"
 #include <QDebug>
+#include <QCoreApplication>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QMediaDevices>
@@ -35,17 +36,23 @@ void VoskWorker::startRecognition()
         return;
     }
 
-    // 1. 加载模型（请修改为你的实际路径）
-    // 建议使用绝对路径或确保 exe 同级目录下有 model 文件夹
-    QString modelPath = "model";
-    m_model = vosk_model_new(modelPath.toUtf8().constData());
+    // 1. 加载模型（复用已加载的，避免每次开关都重载约 40MB 模型）
+    // 模型目录与 exe 同级（CMake 构建后已把 model/ 拷贝到 exe 旁）
     if (!m_model) {
-        emit errorOccurred("加载 Vosk 模型失败，路径：" + modelPath);
-        return;
+        QString modelPath = QCoreApplication::applicationDirPath() + "/model";
+        m_model = vosk_model_new(modelPath.toUtf8().constData());
+        if (!m_model) {
+            emit errorOccurred("加载 Vosk 模型失败，路径：" + modelPath);
+            return;
+        }
+        qDebug() << "Vosk 模型加载成功";
     }
-    qDebug() << "Vosk 模型加载成功";
 
-    // 2. 创建识别器（采样率 16000 Hz）
+    // 2. 释放旧识别器再按当前模型重建（识别器创建成本低，模型复用）
+    if (m_recognizer) {
+        vosk_recognizer_free(m_recognizer);
+        m_recognizer = nullptr;
+    }
     m_recognizer = vosk_recognizer_new(m_model, 16000.0);
     if (!m_recognizer) {
         emit errorOccurred("创建 Vosk 识别器失败");

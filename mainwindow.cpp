@@ -595,17 +595,11 @@ void MainWindow::onFrameReceived(int deviceId, quint8 cmdType, quint8 deviceType
 
     // 边缘代理:设备上行帧同步转发网关(未连接时 forwardDeviceData 内部静默跳过)
     if (m_gateway) {
-        QByteArray raw = data;   // 数据段还原成完整帧(头4+data+校验+尾1)
-        QByteArray frame;
-        frame.resize(4 + raw.size() + 2);
-        frame[0] = char(0xAA);
-        frame[1] = char(cmdType);
-        frame[2] = char(deviceType);
-        frame[3] = char(raw.size());
-        frame.replace(4, raw.size(), raw);
-        frame[frame.size() - 2] = 0x00;   // 校验位(简化:原帧校验已在解析层消费)
-        frame[frame.size() - 1] = char(0x55);
-        m_gateway->forwardDeviceData(frame);
+        // 用统一组包入口重建完整帧，校验和正确计算（不再填 0x00）
+        QByteArray frame = CommandProcessor::createCommand(cmdType, deviceType, data);
+        if (!frame.isEmpty()) {
+            m_gateway->forwardDeviceData(frame);
+        }
     }
 
     if (!deviceManager) return;

@@ -127,9 +127,20 @@ void SerialWork::handleReadyRead()
     }
 }
 
-// 串口错误回调。TODO：按错误类型分类上报，
-// 典型的 ResourceError 是 USB 设备被拔出，上层应据此走设备下线流程
+// 串口错误回调：按错误类型分类处理。
+// ResourceError 典型场景是 USB 设备被拔出，此时关闭串口并通知上层下线
 void SerialWork::handleError(QSerialPort::SerialPortError error)
 {
+    if (error == QSerialPort::NoError) return;   // 无错误不处理，避免刷屏
 
+    QString msg = m_serial->errorString();
+    if (error == QSerialPort::ResourceError) {
+        // 设备拔出：停刷写定时器、关串口、通知上层（UI 据此更新状态、允许重连）
+        if (m_serial->isOpen()) {
+            m_flushTimer->stop();
+            m_serial->close();
+            emit serialClosed(m_deviceId);
+        }
+    }
+    emit errorOccurred(m_deviceId, msg);
 }

@@ -25,6 +25,12 @@ int RingBuffer::write(const char *data, int len, WritePolicy policy)
         return 0;
     }
 
+    // 单次写入超过整个缓冲容量：只保留尾部 capacity 字节，避免 count 下溢与越界写
+    if (len > capacity) {
+        data += (len - capacity);
+        len = capacity;
+    }
+
     if (policy == OverwriteOld) {
         // 空间不够就把最老的数据丢掉，保证新数据能写进去
         int free = capacity - count.load();

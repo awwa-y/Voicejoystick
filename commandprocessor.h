@@ -13,7 +13,7 @@ class CommandProcessor
 public:
 
      CommandProcessor(QWidget *parent = nullptr);
-    ~CommandProcessor();
+    ~CommandProcessor() = default;
 
      // 摇杆方向控制帧：x/y 偏移(-100..100) + 速度，数据段 3 字节
      static QByteArray createControlFrame(int x, int y, int speed);
