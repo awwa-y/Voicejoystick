@@ -46,6 +46,10 @@ public:
     bool removeDevice(int deviceId);
     // 给指定设备发原始数据（走队列连接，实际发送在设备线程里）
     bool sendData(int deviceId, const QByteArray &data);
+
+    // 模拟模式：不开真实串口，直接把设备标记为已连接、把发送帧打到日志（无硬件演示用）
+    void setSimulate(bool on);
+    bool isSimulate() const { return m_simulate; }
     // 给某类型所有设备发数据（比如所有电机一起停）
     bool sendCommandByType(DeviceType deviceType, const QByteArray &data);
     // 给所有在线设备发数据
@@ -104,6 +108,7 @@ private:
     QMap<DeviceType, QList<int>> deviceTypeMap;  // 类型 -> ID 列表（按类型群发用）
     int nextDeviceId;      // 自增 ID 分配器
     int activeDeviceId;    // 当前活动设备，-1 表示没有
+    bool m_simulate = false;  // 模拟模式（无硬件演示）
 };
 
 #endif // DEVICEMANAGER_H

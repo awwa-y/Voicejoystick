@@ -15,6 +15,8 @@
 #include "commandprocessor.h"
 #include "log.h"
 #include <QSignalBlocker>
+#include <QMenu>
+#include <QAction>
 #include <cstring>
 
 // 构造：建 UI、初始化串口逻辑、连好所有信号槽（设备/摇杆/语音/日志）
@@ -52,6 +54,16 @@ MainWindow::MainWindow(QWidget *parent)
     //设备连接
     deviceManager =new DeviceManager(this);
     connect(ui->adddevice,&QPushButton::clicked,this,&MainWindow::onAddDeviceClicked);
+
+    // 调试菜单：模拟设备模式（无硬件也能跑通发送路径、把帧打进日志，方便演示/面试）
+    QMenu *debugMenu = menuBar()->addMenu("调试");
+    QAction *simAct = debugMenu->addAction("模拟设备（无需硬件）");
+    simAct->setCheckable(true);
+    connect(simAct, &QAction::toggled, this, [this](bool on) {
+        if (deviceManager) deviceManager->setSimulate(on);
+        Logger::instance()->info(on ? "已开启模拟设备模式（不打开真实串口）"
+                                    : "已关闭模拟设备模式");
+    });
 
     // manager管理串口线程
 
@@ -377,11 +389,15 @@ void MainWindow::onAddDeviceClicked()
     QString devicename;
     DeviceType type = getSelectedDeviceType();
 
-    // 检查是否选择了串口
+    // 检查是否选择了串口（模拟模式下允许不选，自动用 SIM-N）
     QString portName = ui->comCombox->currentText();
     if (portName.isEmpty()) {
-        QMessageBox::warning(this, "警告", "请先选择串口");
-        return;
+        if (deviceManager->isSimulate()) {
+            portName = QString("SIM-%1").arg(deviceManager->getDeviceList().size() + 1);
+        } else {
+            QMessageBox::warning(this, "警告", "请先选择串口");
+            return;
+        }
     }
 
     // 串口占用检查：遍历所有已添加实例（不只活动设备）

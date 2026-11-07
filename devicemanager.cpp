@@ -109,22 +109,36 @@ bool DeviceManager::removeDevice(int deviceId)
     return false;
 }
 
+// 开启/关闭模拟模式（无硬件演示用）：只影响 open/close/sendData 三个入口
+void DeviceManager::setSimulate(bool on)
+{
+    m_simulate = on;
+}
+
 // 把"打开串口"请求定向投递到指定设备的线程（替代原来对全体 SerialWork 的广播）
 void DeviceManager::openSerialRequest(const QString &portName, int baudRate, int deviceId)
 {
-    if (devices.contains(deviceId)) {
-        QMetaObject::invokeMethod(devices[deviceId]->serialWork, "openSerial", Qt::QueuedConnection,
-                                  Q_ARG(QString, portName), Q_ARG(int, baudRate), Q_ARG(int, deviceId));
+    if (!devices.contains(deviceId)) return;
+    if (m_simulate) {                       // 模拟：跳过真实串口，直接置连接态
+        setDeviceConnected(deviceId, true);
+        emit deviceConnected(deviceId);
+        return;
     }
+    QMetaObject::invokeMethod(devices[deviceId]->serialWork, "openSerial", Qt::QueuedConnection,
+                              Q_ARG(QString, portName), Q_ARG(int, baudRate), Q_ARG(int, deviceId));
 }
 
 // 把"关闭串口"请求定向投递到指定设备的线程（替代广播）
 void DeviceManager::closeSerialRequest(int deviceId)
 {
-    if (devices.contains(deviceId)) {
-        QMetaObject::invokeMethod(devices[deviceId]->serialWork, "closeSerial", Qt::QueuedConnection,
-                                  Q_ARG(int, deviceId));
+    if (!devices.contains(deviceId)) return;
+    if (m_simulate) {                       // 模拟：直接置断开态
+        setDeviceConnected(deviceId, false);
+        emit deviceDisconnected(deviceId);
+        return;
     }
+    QMetaObject::invokeMethod(devices[deviceId]->serialWork, "closeSerial", Qt::QueuedConnection,
+                              Q_ARG(int, deviceId));
 }
 
 // 给指定设备发数据。校验存在性和连接状态，通过信号转发到设备线程，
@@ -141,6 +155,17 @@ bool DeviceManager::sendData(int deviceId, const QByteArray &data)
     if (!device->isConnected) {
         emit deviceError(deviceId, "Device not connected");
         return false;
+    }
+
+    if (m_simulate) {                       // 模拟：把要发的帧打到日志，不碰真实串口
+        QByteArray hexBytes = data.toHex(' ').toUpper();
+        Logger::instance()->info(QString("[模拟] 设备%1 发送 %2 字节: %3")
+                                     .arg(deviceId).arg(data.size())
+                                     .arg(QString::fromLatin1(hexBytes.constData())));
+        device->lastActivity = QDateTime::currentDateTime();
+        device->lastCommand = data;
+        emit deviceActivity(deviceId);
+        return true;
     }
 
     QMetaObject::invokeMethod(device->serialWork, "sendData", Qt::QueuedConnection,
