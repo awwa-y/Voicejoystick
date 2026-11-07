@@ -13,7 +13,7 @@
 class ProtocolFrame : public QObject{
     Q_OBJECT
 public:
-    ProtocolFrame();
+    explicit ProtocolFrame(QObject *parent = nullptr);
 
     // 组包：命令+设备+数据 拼成完整帧
     // data 超过 255 字节返回空（协议 dataLen 只有 1 字节，放不下）

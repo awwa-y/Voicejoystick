@@ -74,16 +74,14 @@ signals:
     void deviceActivity(int deviceId);                                // 有发送动作
     void activeDeviceChanged(int deviceId);
 
-    // 转发给串口线程的请求（队列连接，跨线程安全）
-    void openSerialRequest(QString portName, int baudRate, int deviceId);
-    void closeSerialRequest(int deviceId);
-    void sendDataRequest(int deviceId, const QByteArray &data);
-
 public slots:
     void handleSerialOpened(int deviceId);                            // 串口打开成功的回调
     void handleSerialClosed(int deviceId);                            // 串口关闭的回调
-    void handleDataAvailable(int deviceId);                           // 接收缓冲有数据的回调，取走并上报
     void handleSerialError(int deviceId, const QString &error);       // 串口错误的回调
+
+    // 把请求定向投递到指定设备的线程（替代原来对全体 SerialWork 的广播）
+    void openSerialRequest(const QString &portName, int baudRate, int deviceId);
+    void closeSerialRequest(int deviceId);
 
 private:
     // 单台设备的全部信息
@@ -96,7 +94,6 @@ private:
         QString status;
         bool isConnected;
         SerialWork *serialWork;      // 串口工作者（住在 device->thread 里）
-        ProtocolFrame *parser;       // 该设备专属解析器（住主线程，设备间字节流不混流）
         QThread *thread;             // 该设备专属线程
         QDateTime lastActivity;      // 最后一次收发时间（判断超时用）
         QByteArray lastCommand;      // 最后发送的数据（调试用）

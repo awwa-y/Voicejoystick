@@ -1,12 +1,23 @@
 #include "serialwork.h"
+#include "protocolframe.h"
 
 // 构造：建串口对象、收发双缓冲、刷写定时器，连好三条内部信号链
 // 注意此时串口没打开、定时器没启动，都等 openSerial 触发
 SerialWork::SerialWork(int deviceId,QObject *parent)
-    :QObject(parent), m_serial(new QSerialPort(this)),m_recieveBuffer(new RingBuffer(4096, this))
+    :QObject(parent), m_serial(new QSerialPort(this)),m_parser(new ProtocolFrame(this))
     , m_sendBuffer(new RingBuffer(4096, this))
 {
     m_deviceId = deviceId;   // 必须初始化，否则是垃圾值，后面按ID过滤会失效
+
+    // 解析器与串口同住设备线程：字节一到就地解析，结果经信号跨线程上抛，
+    // 避免上层线程跨线程读缓冲、也避免字节流被多线程共享。
+    connect(m_parser, &ProtocolFrame::frameReceived, this,
+            [this](quint8 cmd, quint8 dev, const QByteArray &data) {
+                emit frameReceived(m_deviceId, cmd, dev, data);
+            });
+    connect(m_parser, &ProtocolFrame::errorReported, this,
+            [this](const QString &msg) { emit parseError(m_deviceId, msg); });
+
     m_flushTimer = new QTimer(this);
     m_flushTimer->setInterval(10);   // 10ms 刷写周期，发送延迟可控
     connect(m_serial, &QSerialPort::readyRead, this, &SerialWork::handleReadyRead);
@@ -19,16 +30,6 @@ SerialWork::SerialWork(int deviceId,QObject *parent)
 SerialWork::~SerialWork()
 {
     m_flushTimer->stop();
-}
-
-bool SerialWork::hasData()
-{
-    return m_recieveBuffer->hasData();
-}
-
-QByteArray SerialWork::readAllData()
-{
-    return m_recieveBuffer->readAll();
 }
 
 // 打开串口（在本设备自己的线程里执行）
@@ -67,6 +68,7 @@ void SerialWork::closeSerial(int deviceId)
 
         if (m_serial->isOpen()) {
             m_serial->close();
+            m_parser->reset();   // 丢掉攒了半截的帧，下次连接从干净状态开始
             emit serialClosed(deviceId);
         }
     }
@@ -113,18 +115,15 @@ void SerialWork::flushSendBuffer()
     }
 }
 
-// readyRead 回调：readAll 全部搬进接收 RingBuffer
-// 只发 newDataAvailable 通知（不带数据），谁需要谁来 readAllData 取，
-// 省一次跨线程数据拷贝
+// readyRead 回调：readAll 取走这次到达的字节，就地喂给本线程的解析器。
+// 原始字节先 emit 给上层记日志；解析器攒出整帧会同步 emit frameReceived。
 void SerialWork::handleReadyRead()
 {
     QByteArray data = m_serial->readAll();
+    if (data.isEmpty()) return;
 
-    // 写入循环队列
-    if (!data.isEmpty()) {
-        m_recieveBuffer->write(data);
-        emit newDataAvailable(m_deviceId);
-    }
+    emit dataReceived(m_deviceId, data);
+    m_parser->feed(data);
 }
 
 // 串口错误回调：按错误类型分类处理。

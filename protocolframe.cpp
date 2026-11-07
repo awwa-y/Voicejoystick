@@ -2,8 +2,8 @@
 #include <QDebug>
 
 // 构造：初始状态是等帧头，刚启动还没收到任何字节
-ProtocolFrame::ProtocolFrame()
-    : QObject(nullptr),
+ProtocolFrame::ProtocolFrame(QObject *parent)
+    : QObject(parent),
     currentState(ParseState::WaitForMagic)
 {
 }

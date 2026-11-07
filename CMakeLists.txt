@@ -16,6 +16,8 @@ qt_add_executable(mawinHcom
     mainwindow.cpp
     mainwindow.h
     mainwindow.ui
+    uitheme.h
+    uitheme.cpp
     serialwork.h
     serialwork.cpp
     log.h

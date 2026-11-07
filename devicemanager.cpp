@@ -23,7 +23,6 @@ DeviceManager::~DeviceManager()
             delete device->serialWork;
             delete device->thread;
         }
-        delete device->parser;
         delete device;
         ++it;
     }
@@ -46,28 +45,27 @@ int DeviceManager::addDevice(const QString &portName, int baudRate, const QStrin
     device->thread = new QThread();
     device->serialWork = new SerialWork(deviceId, nullptr);
 
-    connect(this, &DeviceManager::openSerialRequest, device->serialWork, &SerialWork::openSerial);
-    connect(this, &DeviceManager::closeSerialRequest, device->serialWork, &SerialWork::closeSerial);
-    connect(this, &DeviceManager::sendDataRequest, device->serialWork, &SerialWork::sendData);
-
+    // 串口线程回调（队列连接，回调在主线程执行）
     connect(device->serialWork, &SerialWork::serialOpened, this, &DeviceManager::handleSerialOpened);
     connect(device->serialWork, &SerialWork::serialClosed, this, &DeviceManager::handleSerialClosed);
     connect(device->serialWork, &SerialWork::errorOccurred, this, &DeviceManager::handleSerialError);
 
-    connect(device->serialWork, &SerialWork::newDataAvailable, this, &DeviceManager::handleDataAvailable, Qt::QueuedConnection);
+    // 解析结果在串口线程就地产出，经信号跨线程投递到主线程
+    connect(device->serialWork, &SerialWork::dataReceived, this,
+            [this](int devId, const QByteArray &data) { emit deviceDataReceived(devId, data); },
+            Qt::QueuedConnection);
+    connect(device->serialWork, &SerialWork::frameReceived, this,
+            [this](int devId, quint8 cmd, quint8 dev, const QByteArray &data) {
+                emit deviceFrameReceived(devId, cmd, dev, data);
+            },
+            Qt::QueuedConnection);
+    connect(device->serialWork, &SerialWork::parseError, this,
+            [](int devId, const QString &msg) {
+                Logger::instance()->warning(QString("设备%1 协议解析错误: %2").arg(devId).arg(msg));
+            },
+            Qt::QueuedConnection);
 
-        // 每设备一个解析器：多设备字节流混进同一个状态机会互相污染
-        device->parser = new ProtocolFrame();
-        connect(device->parser, &ProtocolFrame::frameReceived, this,
-                [this, deviceId](quint8 cmd, quint8 dev, const QByteArray &data) {
-                    emit deviceFrameReceived(deviceId, cmd, dev, data);
-                });
-        // 解析错误只记日志，不走 deviceError（那个会弹模态框，偶发校验失败会刷屏）
-        connect(device->parser, &ProtocolFrame::errorReported, this, [deviceId](const QString &msg) {
-            Logger::instance()->warning(QString("设备%1 协议解析错误: %2").arg(deviceId).arg(msg));
-        });
-
-        device->serialWork->moveToThread(device->thread);
+    device->serialWork->moveToThread(device->thread);
     device->thread->start();
 
     devices[deviceId] = device;
@@ -95,7 +93,6 @@ bool DeviceManager::removeDevice(int deviceId)
         device->thread->wait();
         delete device->serialWork;
         delete device->thread;
-        delete device->parser;
         delete device;
 
         devices.remove(deviceId);
@@ -110,6 +107,24 @@ bool DeviceManager::removeDevice(int deviceId)
         return true;
     }
     return false;
+}
+
+// 把"打开串口"请求定向投递到指定设备的线程（替代原来对全体 SerialWork 的广播）
+void DeviceManager::openSerialRequest(const QString &portName, int baudRate, int deviceId)
+{
+    if (devices.contains(deviceId)) {
+        QMetaObject::invokeMethod(devices[deviceId]->serialWork, "openSerial", Qt::QueuedConnection,
+                                  Q_ARG(QString, portName), Q_ARG(int, baudRate), Q_ARG(int, deviceId));
+    }
+}
+
+// 把"关闭串口"请求定向投递到指定设备的线程（替代广播）
+void DeviceManager::closeSerialRequest(int deviceId)
+{
+    if (devices.contains(deviceId)) {
+        QMetaObject::invokeMethod(devices[deviceId]->serialWork, "closeSerial", Qt::QueuedConnection,
+                                  Q_ARG(int, deviceId));
+    }
 }
 
 // 给指定设备发数据。校验存在性和连接状态，通过信号转发到设备线程，
@@ -128,7 +143,8 @@ bool DeviceManager::sendData(int deviceId, const QByteArray &data)
         return false;
     }
 
-    emit sendDataRequest(deviceId, data);
+    QMetaObject::invokeMethod(device->serialWork, "sendData", Qt::QueuedConnection,
+                              Q_ARG(int, deviceId), Q_ARG(QByteArray, data));
 
     device->lastActivity = QDateTime::currentDateTime();
     device->lastCommand = data;
@@ -255,8 +271,7 @@ void DeviceManager::handleSerialClosed(int deviceId)
         DeviceInfo *device = devices[deviceId];
         device->isConnected = false;
         device->status = "Disconnected";
-        // 流结束了，丢掉攒了半截的帧，下次连接从干净状态开始
-        device->parser->reset();
+        // 解析器在 SerialWork 线程里，closeSerial 时已自行 reset
 
         qDebug() << "Device" << deviceId << "disconnected";
         emit deviceDisconnected(deviceId);
@@ -264,24 +279,7 @@ void DeviceManager::handleSerialClosed(int deviceId)
     }
 }
 
-// 接收缓冲有数据：从串口线程的 RingBuffer 取走，记录并上报给上层
-// 取数据的动作发生在主线程，RingBuffer 的锁保证跨线程安全
-void DeviceManager::handleDataAvailable(int deviceId)
-{
-    if (devices.contains(deviceId)) {
-        DeviceInfo *device = devices[deviceId];
-        if (device->serialWork->hasData()) {
-            QByteArray data = device->serialWork->readAllData();
-            if (!data.isEmpty()) {
-                device->lastActivity = QDateTime::currentDateTime();
-                device->lastResponse = data;
-                emit deviceDataReceived(device->id, data);
-                // 字节流过状态机，攒出完整帧会同步走 deviceFrameReceived
-                device->parser->feed(data);
-            }
-        }
-    }
-}
+
 
 // 串口错误：置错误状态并上报。设备拔出（ResourceError）最终也走这里
 void DeviceManager::handleSerialError(int deviceId, const QString &error)

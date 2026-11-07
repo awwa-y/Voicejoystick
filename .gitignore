@@ -14,3 +14,9 @@ CMakeLists.txt.user
 # 大体积二进制(语音模型/第三方库,从 Release 下载完整包)
 model/
 libs/
+
+# 本地工程副本/发布包(不入库)
+mawinHcom/
+mawinHcom-ui/
+build-ui/
+VoiceJoystick-v1.0-win64.zip

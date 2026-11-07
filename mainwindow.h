@@ -50,10 +50,6 @@ public slots:
     void onLogMessageReceived(const QString &message);   // 日志显示到 UI
 private slots:
     // 设备连接
-    void onMotorConnectClicked();      // 电机连接/断开
-    void onServoConnectClicked();      // 舵机连接/断开
-    void onSensorConnectClicked();     // 传感器连接/断开
-
     void onRefreshPortsClicked();      // 刷新串口列表
     // 方向/速度按钮
     void onForwardButtonClicked();
@@ -86,8 +82,11 @@ private slots:
     void toggleVoiceRecognition(bool enabled); // 语音开关按钮
     void onGatewayConnectClicked();            // 网关连接/断开按钮
 private:
-    void applyDarkTheme();          // 全局深色主题样式
-    void buildModernLayout();       // 卡片式布局重排(只动布局,控件与逻辑不动)
+    // ---- P0: 三合一连接逻辑 + 状态集中更新 ----
+    void toggleDevice(DeviceType type);                       // 连接/断开指定类型设备
+    QPushButton *connectButton(DeviceType type);              // 类型 → 对应连接按钮
+    bool isTypeConnected(DeviceType type) const;              // 类型 → 是否已连接
+    void updateConnectedUi(DeviceType type, bool connected);  // 统一更新 bool + 按钮文字
     Ui::MainWindow *ui;
     JoystickManager *m_joystick;    // 摇杆控件
     QTimer *m_sendTimer;            // 摇杆数据定时发送（40ms 周期）
