@@ -23,7 +23,6 @@
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
     , ui(new Ui::MainWindow)
-    , m_isConnected(false)
     , m_speedValue(0)
 {
     ui->setupUi(this);
@@ -309,11 +308,7 @@ void MainWindow::onSerialOpened(int deviceId)
     updateDeviceListCombox();   // 列表里的 [已连接] 标记同步刷新
 }
 
-// 串口关闭（目前空实现）
-void MainWindow::onSerialClosed()
-{
 
-}
 
 // 摇杆位置变化：只存进 pending，真正发送由 40ms 定时器做
 void MainWindow::changenewdata(int newx, int newy)
@@ -567,11 +562,7 @@ void MainWindow::onFrameReceived(int deviceId, quint8 cmdType, quint8 deviceType
     }
 }
 
-// 手动发送命令按钮（调试用）
-void MainWindow::onSendCommandClicked()
-{
 
-}
 
 // 速度变化：更新显示并发调速帧
 void MainWindow::speedchange()
@@ -582,17 +573,7 @@ void MainWindow::speedchange()
         sendPendingData();   // 立即发送
     }
 }
-// 前进按钮：摇杆打到正前方
-void MainWindow::onForwardButtonClicked()
-{
-    qDebug() << "Forward button clicked";
-}
 
-// 后退按钮
-void MainWindow::onBackwardButtonClicked()
-{
-    qDebug() << "Backward button clicked";
-}
 
 // 加速按钮（转发到 speedUp）
 void MainWindow::onSpeedUpButtonClicked()

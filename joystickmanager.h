@@ -11,12 +11,8 @@ class JoystickManager:public QWidget
 {
     Q_OBJECT
 public:
-    JoystickManager();
-
-public:
     explicit JoystickManager(QWidget *parent = nullptr);
     ~JoystickManager();
-    void resetPosition();              // 旋钮归中
 
     void setPosition(int x, int y);    // 外部按百分比(-100..100)设置旋钮位置
     void setPositionvoice(int x, int y);  // 语音通道的位置设置（行为同上）

@@ -51,16 +51,13 @@ public slots:
 private slots:
     // 设备连接
     void onRefreshPortsClicked();      // 刷新串口列表
-    // 方向/速度按钮
-    void onForwardButtonClicked();
-    void onBackwardButtonClicked();
+    // 速度按钮
     void onSpeedUpButtonClicked();
     void onSpeedDownButtonClicked();
     // 串口事件
     void onDataReceived(int deviceId, const QByteArray &data);  // 收到设备数据
     void onSerialError(int deviceId, const QString &error);
     void onSerialOpened(int deviceId);
-    void onSerialClosed();
     void changenewdata(int newx,int newy);   // 摇杆数据变化（40ms 周期发送的入口）
     void sendPendingData();                 // 定时发送积压的摇杆数据
     void speedUp();
@@ -74,7 +71,6 @@ private slots:
     void onDeviceStatusChanged(int deviceId, const QString &status);
     // 收到 DeviceManager 解析出的完整协议帧（data 是帧内数据段，不是裸字节流）
     void onFrameReceived(int deviceId, quint8 cmdType, quint8 deviceType, const QByteArray &data);
-    void onSendCommandClicked();                                   // 手动发命令按钮
 
     void onVoiceCommand(const QString &cmd);   // 识别到语音指令
     void onVoiceStatus(const QString &msg);    // 语音引擎状态（启动/停止）
@@ -90,14 +86,10 @@ private:
     Ui::MainWindow *ui;
     JoystickManager *m_joystick;    // 摇杆控件
     QTimer *m_sendTimer;            // 摇杆数据定时发送（40ms 周期）
-    bool m_isConnected;
     QString portName;
     int baud;
     int m_pendingX, m_pendingY;     // 待发送的摇杆位置
-    bool m_pendingA, m_pendingB;
     int m_speedValue;               // 当前速度
-    int m_lastX;
-    int m_lastY;
 
     bool m_motorConnected;
     bool m_servoConnected;

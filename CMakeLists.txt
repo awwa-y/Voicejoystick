@@ -38,10 +38,21 @@ qt_add_executable(mawinHcom
     resources.qrc   # Qt 资源(窗口图标)
 )
 
-# Vosk 配置
-set(VOSK_DIR ${CMAKE_CURRENT_SOURCE_DIR}/libs/vosk)
-target_include_directories(mawinHcom PRIVATE ${VOSK_DIR})
-target_link_libraries(mawinHcom PRIVATE ${VOSK_DIR}/libvosk.lib)
+# Vosk 配置（可用 -DVOSK_ROOT=... 指定，默认 libs/vosk）
+set(VOSK_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/libs/vosk" CACHE PATH "Vosk 库根目录")
+if(NOT EXISTS "${VOSK_ROOT}/vosk_api.h")
+    message(FATAL_ERROR "找不到 Vosk 头文件: ${VOSK_ROOT}/vosk_api.h；请把 Vosk 放到 libs/vosk 或用 -DVOSK_ROOT=<目录> 指定")
+endif()
+if(WIN32)
+    set(VOSK_LIB "${VOSK_ROOT}/libvosk.lib")
+else()
+    set(VOSK_LIB "${VOSK_ROOT}/libvosk.so")
+endif()
+if(NOT EXISTS "${VOSK_LIB}")
+    message(FATAL_ERROR "找不到 Vosk 库: ${VOSK_LIB}")
+endif()
+target_include_directories(mawinHcom PRIVATE ${VOSK_ROOT})
+target_link_libraries(mawinHcom PRIVATE ${VOSK_LIB})
 
 # 链接 Qt 模块
 target_link_libraries(mawinHcom PRIVATE
@@ -57,13 +68,15 @@ if(MINGW)
     # -static-libwinpthread 在你的 MinGW 中不支持，故不添加
 endif()
 
-# 复制 Vosk DLL 到输出目录
-add_custom_command(TARGET mawinHcom POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        ${VOSK_DIR}/libvosk.dll
-        $<TARGET_FILE_DIR:mawinHcom>
-    COMMENT "Copying libvosk.dll"
-)
+# 复制 Vosk DLL 到输出目录（仅 Windows 动态库需要）
+if(WIN32)
+    add_custom_command(TARGET mawinHcom POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${VOSK_ROOT}/libvosk.dll
+            $<TARGET_FILE_DIR:mawinHcom>
+        COMMENT "Copying libvosk.dll"
+    )
+endif()
 
 # 复制 MinGW 运行时 DLL —— 必须从编译器目录复制，绝不能用 vosk 自带的！
 # 【教训】vosk 发行包里的 libstdc++-6.dll 是老版 GCC 编译的，缺少 Qt6.9(GCC13)
