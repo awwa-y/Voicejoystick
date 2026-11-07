@@ -86,7 +86,7 @@ private:
     void toggleDevice(DeviceType type);                       // 连接/断开指定类型设备
     QPushButton *connectButton(DeviceType type);              // 类型 → 对应连接按钮
     bool isTypeConnected(DeviceType type) const;              // 类型 → 是否已连接
-    void updateConnectedUi(DeviceType type, bool connected);  // 统一更新 bool + 按钮文字
+    void refreshActiveDevice(DeviceType type);                // 从 DeviceManager 重算活动设备状态并刷新 UI
     Ui::MainWindow *ui;
     JoystickManager *m_joystick;    // 摇杆控件
     QTimer *m_sendTimer;            // 摇杆数据定时发送（40ms 周期）
@@ -109,8 +109,10 @@ private:
 
     // 设备管理器
     DeviceManager *deviceManager = nullptr;
-    // 设备类型 -> 当前选中的设备 ID（UI 操作的目标）
+    // 设备类型 -> 当前操作的活动设备（页签/按钮只作用于它）
     QMap<DeviceType, int> devicetypeIdmap;
+    // 设备类型 -> 该类型所有设备 ID（同类型多实例）
+    QMap<DeviceType, QList<int>> m_devicesByType;
 
     // 网关客户端(边缘代理):串口帧经 TCP 转发 epoll 网关
     GatewayClient *m_gateway = nullptr;

@@ -11,12 +11,12 @@
 
 class ProtocolFrame;  // 前向声明：协议解析器，每设备一个实例
 
-// 设备类型（业务侧的分类，和协议帧里的 deviceType 字段对应）
+// 设备类型（业务侧的分类，数值与 CommandProcessor 的 DEVICE_* 线缆常量保持一致）
 enum DeviceType {
     DEVICE_TYPE_UNKNOWN = 0,
-    DEVICE_TYPE_HUMIDITY_SENSOR = 1,  // 传感器
-    DEVICE_TYPE_SERVO = 2,            // 舵机
-    DEVICE_TYPE_MOTOR = 3             // 电机
+    DEVICE_TYPE_MOTOR = 0x01,           // 电机（与 CommandProcessor::DEVICE_MOTOR 一致）
+    DEVICE_TYPE_SERVO = 0x02,           // 舵机（与 CommandProcessor::DEVICE_SERVO 一致）
+    DEVICE_TYPE_HUMIDITY_SENSOR = 0x03  // 传感器（与 CommandProcessor::DEVICE_SENSOR 一致）
 };
 
 // 命令类型

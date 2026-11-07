@@ -109,3 +109,17 @@ qt_generate_deploy_app_script(
     NO_UNSUPPORTED_PLATFORM_ERROR
 )
 install(SCRIPT ${deploy_script})
+
+# ============================================================================
+# 单元测试（P3：接入 CTest）
+# ============================================================================
+enable_testing()
+
+qt_add_executable(test_protocolframe
+    test_protocolframe.cpp
+    protocolframe.h
+    protocolframe.cpp
+)
+target_link_libraries(test_protocolframe PRIVATE Qt6::Core)
+
+add_test(NAME protocolframe COMMAND test_protocolframe)

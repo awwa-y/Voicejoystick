@@ -14,6 +14,7 @@
 #include <QLineEdit>
 #include "commandprocessor.h"
 #include "log.h"
+#include <QSignalBlocker>
 #include <cstring>
 
 // 构造：建 UI、初始化串口逻辑、连好所有信号槽（设备/摇杆/语音/日志）
@@ -46,6 +47,7 @@ MainWindow::MainWindow(QWidget *parent)
     connect(ui->servoConnectButton, &QPushButton::clicked, this, [this]{ toggleDevice(DEVICE_TYPE_SERVO); });
     connect(ui->sensorConnectButton, &QPushButton::clicked, this, [this]{ toggleDevice(DEVICE_TYPE_HUMIDITY_SENSOR); });
     connect(ui->removedeviceButton, &QPushButton::clicked, this, &MainWindow::onRemoveDeviceClicked);
+    connect(ui->deviceListCombox, &QComboBox::currentIndexChanged, this, &MainWindow::onDeviceComboBoxChanged);
 
     //设备连接
     deviceManager =new DeviceManager(this);
@@ -64,10 +66,9 @@ MainWindow::MainWindow(QWidget *parent)
         onSerialOpened(deviceId);
     });
     connect(deviceManager, &DeviceManager::deviceDisconnected, this, [=](int deviceId){
-        // 设备断开：状态更新统一走 updateConnectedUi
+        // 设备断开：按真实状态刷新活动设备 + 列表
         DeviceType type = deviceManager->getDeviceType(deviceId);
-        updateConnectedUi(type, false);
-        updateDeviceTabStatus(type, true);
+        refreshActiveDevice(type);
         updateDeviceListCombox();
     });
     connect(m_joystick, &JoystickManager::joystickChanged,
@@ -199,8 +200,7 @@ void MainWindow::toggleDevice(DeviceType type)
     int deviceId = devicetypeIdmap[type];
     if (isTypeConnected(type)) {
         emit closeSerialRequest(deviceId);
-        updateConnectedUi(type, false);
-        updateDeviceTabStatus(type, true);
+        refreshActiveDevice(type);   // 异步关闭，状态随后由 deviceDisconnected 信号再刷一次
     } else {
         emit openSerialRequest(deviceManager->getDevicePortName(deviceId),
                                deviceManager->getDeviceBaudRate(deviceId),
@@ -219,28 +219,31 @@ QPushButton *MainWindow::connectButton(DeviceType type)
     }
 }
 
-// 类型 → 是否已连接（读缓存的 bool）
+// 类型 → 当前活动设备是否已连接（以 DeviceManager 为准，避免缓存漂移）
 bool MainWindow::isTypeConnected(DeviceType type) const
 {
-    switch (type) {
-    case DEVICE_TYPE_MOTOR:           return m_motorConnected;
-    case DEVICE_TYPE_SERVO:           return m_servoConnected;
-    case DEVICE_TYPE_HUMIDITY_SENSOR: return m_sensorConnected;
-    default:                          return false;
-    }
+    int id = devicetypeIdmap.value(type, -1);
+    return id > 0 && deviceManager && deviceManager->isDeviceConnected(id);
 }
 
-// 统一更新连接状态：bool + 按钮文字（状态标签由调用方按需刷新）
-void MainWindow::updateConnectedUi(DeviceType type, bool connected)
+// 从 DeviceManager 重算"活动设备"的连接状态，刷新页签/按钮
+// 多实例时，页签只反映该类型当前活动设备的状态
+void MainWindow::refreshActiveDevice(DeviceType type)
 {
+    int deviceId = devicetypeIdmap.value(type, -1);
+    bool connected = (deviceId > 0 && deviceManager && deviceManager->isDeviceConnected(deviceId));
+
     switch (type) {
     case DEVICE_TYPE_MOTOR:           m_motorConnected  = connected; break;
     case DEVICE_TYPE_SERVO:           m_servoConnected  = connected; break;
     case DEVICE_TYPE_HUMIDITY_SENSOR: m_sensorConnected = connected; break;
     default: break;
     }
+
     if (QPushButton *btn = connectButton(type))
         btn->setText(connected ? "断开" : "连接");
+
+    updateDeviceTabStatus(type, !m_devicesByType.value(type).isEmpty());
 }
 
 // 刷新按钮：重新枚举串口填进下拉框
@@ -279,11 +282,8 @@ void MainWindow::onSerialError(int deviceId, const QString &error)
     QMessageBox::critical(this, "串口连接失败",
                           QString("设备: %1\n串口: %2\n错误信息: %3").arg(deviceName).arg(port).arg(error));
 
-    // 重置连接状态
-    updateConnectedUi(type, false);
-
-    // 更新状态标签
-    updateDeviceTabStatus(type, true);
+    // 按设备真实状态刷新（错误后 isConnected 已为 false）
+    refreshActiveDevice(type);
 }
 
 // 串口打开成功：置连接状态，按钮变"断开"
@@ -293,8 +293,8 @@ void MainWindow::onSerialOpened(int deviceId)
 
     DeviceType type = deviceManager->getDeviceType(deviceId);
 
-    updateConnectedUi(type, true);
-    updateDeviceTabStatus(type, true);
+    refreshActiveDevice(type);
+    updateDeviceListCombox();   // 列表里的 [已连接] 标记同步刷新
 }
 
 // 串口关闭（目前空实现）
@@ -314,37 +314,28 @@ void MainWindow::changenewdata(int newx, int newy)
     }
 }
 
-// 定时发送：有 pending 数据就组控制帧发给电机（40ms 周期，平滑流量）
+// 定时发送：摇杆有变化就按 40ms 周期下发。舵机走角度帧，电机走 X/Y+速度控制帧。
 void MainWindow::sendPendingData()
 {
-    if (!deviceManager) return;
+    if (!deviceManager || !m_hasPending) return;
 
-    int currentDevice = -1;
-
-    if (devicetypeIdmap.contains(DEVICE_TYPE_SERVO)) {
-        int servoId = devicetypeIdmap[DEVICE_TYPE_SERVO];
-        if (deviceManager->isDeviceConnected(servoId)) {
-            currentDevice = servoId;
-        }
+    // 舵机：X 轴映射成 0..180 角度
+    int servoId = devicetypeIdmap.value(DEVICE_TYPE_SERVO, -1);
+    if (servoId > 0 && deviceManager->isDeviceConnected(servoId)) {
+        int servoAngle = qBound(0, 90 + m_pendingX, 180);
+        emit sendDataRequest(servoId, CommandProcessor::createServoAngleCommand(servoAngle));
+        Logger::instance()->info(QString("发送舵机角度: %1°").arg(servoAngle));
     }
 
-    if (currentDevice == -1) {
-        return;
+    // 电机：X/Y 方向 + 速度，走控制帧（Y 轴终于用上了）
+    int motorId = devicetypeIdmap.value(DEVICE_TYPE_MOTOR, -1);
+    if (motorId > 0 && deviceManager->isDeviceConnected(motorId)) {
+        emit sendDataRequest(motorId,
+                             CommandProcessor::createControlFrame(m_pendingX, m_pendingY, m_speedValue));
+        Logger::instance()->info(QString("发送电机控制: X=%1 Y=%2 Speed=%3")
+                                     .arg(m_pendingX).arg(m_pendingY).arg(m_speedValue));
     }
 
-    if (!m_hasPending) return;
-
-    qDebug() << "Pending X:" << m_pendingX << " Y:" << m_pendingY << " Speed:" << m_speedValue;
-
-    int servoAngle = 90 + m_pendingX;
-    if (servoAngle < 0) servoAngle = 0;
-    if (servoAngle > 180) servoAngle = 180;
-
-    QByteArray frame = CommandProcessor::createServoAngleCommand(servoAngle);
-    qDebug() << "舵机角度:" << servoAngle << ", 帧内容:" << frame.toHex(' ').toUpper();
-
-    emit sendDataRequest(currentDevice, frame);
-    Logger::instance()->info(QString("发送舵机角度: %1°").arg(servoAngle));
     m_hasPending = false;
 }
 
@@ -393,13 +384,14 @@ void MainWindow::onAddDeviceClicked()
         return;
     }
 
-    //检查COM口是否已被占用
-    for (auto existingType : devicetypeIdmap.keys()) {
-        int existingId = devicetypeIdmap[existingType];
-        if (deviceManager->getDevicePortName(existingId) == portName) {
-            QMessageBox::warning(this, "警告",
-                                 QString("串口 %1 已被 %2 占用").arg(portName, getDeviceNameByType(existingType)));
-            return;
+    // 串口占用检查：遍历所有已添加实例（不只活动设备）
+    for (auto it = m_devicesByType.constBegin(); it != m_devicesByType.constEnd(); ++it) {
+        for (int existingId : it.value()) {
+            if (deviceManager->getDevicePortName(existingId) == portName) {
+                QMessageBox::warning(this, "警告",
+                                     QString("串口 %1 已被 %2 占用").arg(portName, getDeviceNameByType(it.key())));
+                return;
+            }
         }
     }
 
@@ -418,11 +410,12 @@ void MainWindow::onAddDeviceClicked()
         type
         );
 
-    devicetypeIdmap[type] = deviceId;
+    m_devicesByType[type].append(deviceId);   // 同类型多实例都记下来
+    devicetypeIdmap[type] = deviceId;         // 新设备设为该类型的活动设备
     QMessageBox::information(this, "成功",
                              QString("设备添加成功！ID: %1, 串口: %2, 波特率: %3")
                                  .arg(deviceId).arg(portName).arg(baudRate));
-    updateDeviceTabStatus(type, true);
+    refreshActiveDevice(type);
     updateDeviceListCombox();
 }
 
@@ -435,18 +428,9 @@ void MainWindow::onRemoveDeviceClicked()
         return;
     }
 
-    // 获取deviceId
+    // 获取deviceId 与 其类型（以 DeviceManager 为准，支持同类型多实例）
     int deviceId = ui->deviceListCombox->itemData(index).toInt();
-
-    // 根据deviceId找到对应的DeviceType
-    DeviceType typeToRemove = DEVICE_TYPE_UNKNOWN;
-    for (auto it = devicetypeIdmap.constBegin(); it != devicetypeIdmap.constEnd(); ++it) {
-        if (it.value() == deviceId) {
-            typeToRemove = it.key();
-            break;
-        }
-    }
-
+    DeviceType typeToRemove = deviceManager->getDeviceType(deviceId);
     if (typeToRemove == DEVICE_TYPE_UNKNOWN) {
         QMessageBox::warning(this, "警告", "未找到该设备");
         return;
@@ -455,27 +439,34 @@ void MainWindow::onRemoveDeviceClicked()
     // 先断开连接
     emit closeSerialRequest(deviceId);
 
-    // 重置对应连接状态
-    updateConnectedUi(typeToRemove, false);
-
     // 从设备管理器中移除
     deviceManager->removeDevice(deviceId);
-    devicetypeIdmap.remove(typeToRemove);
 
-    // 更新UI
-    updateDeviceTabStatus(typeToRemove, false);
+    // 从该类型的列表里摘掉；若删的是活动设备，退回到该类型剩下的第一台
+    m_devicesByType[typeToRemove].removeAll(deviceId);
+    if (devicetypeIdmap.value(typeToRemove, -1) == deviceId) {
+        const QList<int> &ids = m_devicesByType[typeToRemove];
+        if (ids.isEmpty()) devicetypeIdmap.remove(typeToRemove);
+        else devicetypeIdmap[typeToRemove] = ids.first();
+    }
 
-    // 更新设备列表combo
+    // 更新 UI（按剩下的活动设备重算）
+    refreshActiveDevice(typeToRemove);
     updateDeviceListCombox();
 
     QMessageBox::information(this, "成功", "设备已删除");
 
 }
 
-// 切换设备下拉框：更新活动设备
+// 切换设备下拉框：把选中设备设为它所属类型的活动设备
 void MainWindow::onDeviceComboBoxChanged(int index)
 {
-
+    if (!deviceManager || index < 0) return;
+    int deviceId = ui->deviceListCombox->itemData(index).toInt();
+    DeviceType type = deviceManager->getDeviceType(deviceId);
+    if (type == DEVICE_TYPE_UNKNOWN) return;
+    devicetypeIdmap[type] = deviceId;
+    refreshActiveDevice(type);
 }
 
 // 设备状态变化：更新对应页签的显示
@@ -754,24 +745,16 @@ DeviceType MainWindow::getSelectedDeviceType(){
         devicename="CMD_TYPE_SENSOR";
         deviceType = DEVICE_TYPE_HUMIDITY_SENSOR;  // 传感器类型
     }
-    if (devicetypeIdmap.contains(deviceType)) {
-        QMessageBox::information(this, "提示", "该类型设备已添加");
-
-    }
     return deviceType;
 }
 // 设备类型转显示名
 QString MainWindow::getDeviceNameByType(DeviceType type)
 {
     switch (type) {
-    case DEVICE_TYPE_MOTOR:
-        return "CMD_TYPE_MOTOR_CONTROL";
-    case DEVICE_TYPE_SERVO:
-        return "CMD_TYPE_SERVO_CONTROL";
-    case DEVICE_TYPE_HUMIDITY_SENSOR:
-        return "CMD_TYPE_SENSOR";
-    default:
-        return "CMD_TYPE_UNKNOWN";
+    case DEVICE_TYPE_MOTOR:           return "电机";
+    case DEVICE_TYPE_SERVO:           return "舵机";
+    case DEVICE_TYPE_HUMIDITY_SENSOR: return "传感器";
+    default:                          return "设备";
     }
 }
 //命令控制
@@ -808,18 +791,23 @@ void MainWindow::onLogMessageReceived(const QString &message)
         ui->logger->append(message);
     }
 }
-// 刷新设备下拉框（从 DeviceManager 拉当前列表）
+// 刷新设备下拉框（列出所有已添加设备，支持同类型多实例）
 void MainWindow::updateDeviceListCombox()
 {
+    QSignalBlocker blocker(ui->deviceListCombox);   // 重建列表时不触发 currentIndexChanged
     ui->deviceListCombox->clear();
 
-    for (auto it = devicetypeIdmap.constBegin(); it != devicetypeIdmap.constEnd(); ++it) {
+    for (auto it = m_devicesByType.constBegin(); it != m_devicesByType.constEnd(); ++it) {
         DeviceType type = it.key();
-        int deviceId = it.value();
-        QString port = deviceManager->getDevicePortName(deviceId);
-        QString deviceName = getDeviceNameByType(type);
-        QString itemText = QString("%1 - %2 (ID:%3)").arg(port, deviceName, QString::number(deviceId));
-        ui->deviceListCombox->addItem(itemText,deviceId);
+        for (int deviceId : it.value()) {
+            QString port = deviceManager->getDevicePortName(deviceId);
+            QString deviceName = getDeviceNameByType(type);
+            bool connected = deviceManager->isDeviceConnected(deviceId);
+            QString itemText = QString("%1 - %2 (ID:%3)%4")
+                                   .arg(port, deviceName, QString::number(deviceId),
+                                        connected ? " [已连接]" : "");
+            ui->deviceListCombox->addItem(itemText, deviceId);
+        }
     }
 }
 

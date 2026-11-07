@@ -7,6 +7,7 @@ class TestReceiver : public QObject {
     Q_OBJECT
 public:
     bool success = false;
+    int count = 0;
     quint8 recvCmd = 0;
     quint8 recvDev = 0;
     QByteArray recvData;
@@ -14,6 +15,7 @@ public:
 
 public slots:
     void onFrameReceived(quint8 cmd, quint8 dev, const QByteArray &data) {
+        count++;
         recvCmd = cmd;
         recvDev = dev;
         recvData = data;
@@ -92,8 +94,25 @@ int main(int argc, char *argv[])
         return 1;
     }
 
+    // ----- 测试用例4：粘包（两个完整帧一次喂入，状态机应切成两帧）-----
+    receiver.success = false;
+    int before = receiver.count;
+    QByteArray f4a = ProtocolFrame::pack(0x11, 0x01, "AB");
+    QByteArray f4b = ProtocolFrame::pack(0x22, 0x02, "CD");
+    QByteArray combined = f4a + f4b;
+    for (char byte : combined) {
+        parser.feed(static_cast<quint8>(byte));
+    }
+    if (receiver.count == before + 2) {
+        qDebug() << "Test4 PASS: sticky packets split into 2 frames";
+    } else {
+        qDebug() << "Test4 FAIL: expected 2 frames, got" << (receiver.count - before);
+        return 1;
+    }
+
     qDebug() << "All tests passed!";
     return 0;
 }
 
-// 必须包含 moc 生成的代码（因为 TestReceiver 有 Q_OBJECT）
+// 必须包含 moc 生成的代码（因为 TestReceiver 的 Q_OBJECT 在 .cpp 里）
+#include "test_protocolframe.moc"
