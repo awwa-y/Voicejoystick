@@ -136,9 +136,7 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_gateway, &GatewayClient::gatewayError, this, [this](const QString &msg) {
         Logger::instance()->info(QString("网关错误: %1").arg(msg));
     });
-    connect(m_gateway, &GatewayClient::gatewayMessage, this, [this](const QByteArray &frame) {
-        Logger::instance()->info(QString("网关下发 %1 字节").arg(frame.size()));
-    });
+    connect(m_gateway, &GatewayClient::remoteFrame, this, &MainWindow::onRemoteFrame);
 }
 
 // 析构：先停语音线程（quit+wait 等它退出），再删 UI
@@ -512,15 +510,6 @@ void MainWindow::onFrameReceived(int deviceId, quint8 cmdType, quint8 deviceType
     Q_UNUSED(cmdType)
     Q_UNUSED(deviceType)
 
-    // 边缘代理:设备上行帧同步转发网关(未连接时 forwardDeviceData 内部静默跳过)
-    if (m_gateway) {
-        // 用统一组包入口重建完整帧，校验和正确计算（不再填 0x00）
-        QByteArray frame = CommandProcessor::createCommand(cmdType, deviceType, data);
-        if (!frame.isEmpty()) {
-            m_gateway->forwardDeviceData(frame);
-        }
-    }
-
     if (!deviceManager) return;
 
     DeviceType type = deviceManager->getDeviceType(deviceId);
@@ -622,6 +611,35 @@ void MainWindow::onGatewayConnectClicked()
     }
     Logger::instance()->info(QString("正在连接网关 %1:%2 ...").arg(parts[0]).arg(port));
     m_gateway->connectToGateway(parts[0], port);
+}
+
+// 远端经网关下发一帧：payload 是 AA..55 串口帧，按帧内 deviceType 转给对应设备，并回 ACK
+void MainWindow::onRemoteFrame(quint32 clientId, quint32 methodId, const QByteArray &payload)
+{
+    Q_UNUSED(methodId)
+    if (!m_gateway) return;
+    if (payload.isEmpty()) { m_gateway->respond(clientId, gw::INVALID_PAYLOAD); return; }
+
+    // 帧格式 AA cmd device ...，第 3 字节是 deviceType（已与 DeviceType 数值统一）
+    DeviceType type = DEVICE_TYPE_UNKNOWN;
+    if (payload.size() >= 3) type = DeviceType(quint8(payload.at(2)));
+
+    int deviceId = devicetypeIdmap.value(type, -1);
+    if (deviceId <= 0) {
+        // 目标类型没有活动设备，退化到任意一个已添加设备
+        for (auto it = devicetypeIdmap.constBegin(); it != devicetypeIdmap.constEnd(); ++it) {
+            if (it.value() > 0) { deviceId = it.value(); break; }
+        }
+    }
+
+    if (deviceId > 0) {
+        emit sendDataRequest(deviceId, payload);
+        Logger::instance()->info(QString("网关远程控制: 转发 %1 字节到设备 %2")
+                                     .arg(payload.size()).arg(deviceId));
+        m_gateway->respond(clientId, gw::OK);
+    } else {
+        m_gateway->respond(clientId, gw::SERVICE_UNAVAILABLE);
+    }
 }
 
 // 识别到语音指令：加速/减速发调速帧，左转/右转驱动摇杆

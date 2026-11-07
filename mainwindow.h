@@ -77,6 +77,7 @@ private slots:
     void onVoiceError(const QString &err);     // 语音错误
     void toggleVoiceRecognition(bool enabled); // 语音开关按钮
     void onGatewayConnectClicked();            // 网关连接/断开按钮
+    void onRemoteFrame(quint32 clientId, quint32 methodId, const QByteArray &payload);  // 网关远端下发帧
 private:
     // ---- P0: 三合一连接逻辑 + 状态集中更新 ----
     void toggleDevice(DeviceType type);                       // 连接/断开指定类型设备

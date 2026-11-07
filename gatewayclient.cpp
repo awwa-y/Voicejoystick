@@ -1,25 +1,31 @@
 #include "gatewayclient.h"
+#include "log.h"
 #include <QDebug>
 
-// 构造:socket 不指定 parent,手动管理生命周期
 GatewayClient::GatewayClient(QObject *parent)
     : QObject(parent)
     , m_socket(new QTcpSocket(this))
+    , m_hbTimer(new QTimer(this))
 {
     connect(m_socket, &QTcpSocket::connected, this, &GatewayClient::onConnected);
     connect(m_socket, &QTcpSocket::disconnected, this, &GatewayClient::onDisconnected);
     connect(m_socket, &QTcpSocket::readyRead, this, &GatewayClient::onReadyRead);
     connect(m_socket, &QTcpSocket::errorOccurred, this, &GatewayClient::onErrorOccurred);
+    connect(m_hbTimer, &QTimer::timeout, this, &GatewayClient::sendHeartbeat);
+    m_hbTimer->setInterval(3000);   // 3s 一次心跳，小于网关的超时阈值
 }
 
 GatewayClient::~GatewayClient()
 {
-    // socket 随 this 销毁,断开即可
     if (m_socket->state() != QAbstractSocket::UnconnectedState)
         m_socket->abort();
 }
 
-// 连接网关
+bool GatewayClient::isConnected() const
+{
+    return m_socket->state() == QAbstractSocket::ConnectedState;
+}
+
 void GatewayClient::connectToGateway(const QString &host, quint16 port)
 {
     if (m_socket->state() == QAbstractSocket::ConnectedState)
@@ -28,84 +34,99 @@ void GatewayClient::connectToGateway(const QString &host, quint16 port)
     m_socket->connectToHost(host, port);
 }
 
-// 主动断开
 void GatewayClient::disconnectFromGateway()
 {
     if (m_socket->state() != QAbstractSocket::UnconnectedState)
         m_socket->disconnectFromHost();
 }
 
-bool GatewayClient::isConnected() const
-{
-    return m_socket->state() == QAbstractSocket::ConnectedState;
-}
-
-// 转发串口帧:原始帧直接发(帧自带 AA..55 边界,网关侧按边界切分)
-void GatewayClient::forwardDeviceData(const QByteArray &frame)
-{
-    if (frame.isEmpty())
-        return;
-    if (!isConnected()) {
-        return;   // 未连接时静默丢弃(本地串口功能不受网关影响)
-    }
-    m_socket->write(frame);
-}
-
-// 连接成功
 void GatewayClient::onConnected()
 {
+    sendRegister();          // 先把"串口桥"服务注册到网关
+    m_hbTimer->start();      // 再开始周期心跳，避免被网关超时剔除
     emit gatewayConnected();
 }
 
-// 连接断开(主动或掉线)
 void GatewayClient::onDisconnected()
 {
+    m_hbTimer->stop();
     emit gatewayDisconnected();
 }
 
-// 网关数据到达:先入缓冲再按帧边界切分(防粘包/半包)
-void GatewayClient::onReadyRead()
-{
-    m_recvBuf.append(m_socket->readAll());
-    extractFrames();
-}
-
-// 套接字错误
 void GatewayClient::onErrorOccurred(QAbstractSocket::SocketError error)
 {
-    Q_UNUSED(error);
+    Q_UNUSED(error)
     emit gatewayError(m_socket->errorString());
 }
 
-// 帧边界扫描:找 AA ... 55 的完整帧,逐帧 emit
-// 帧格式:AA cmdType deviceType dataLen data checksum 55(不定长,dataLen 指示)
-void GatewayClient::extractFrames()
+// 注册串口桥服务：REGISTER 的 payload 是 4 字节大端 service_id
+void GatewayClient::sendRegister()
 {
-    while (true) {
-        // 1. 找帧头 AA
-        int head = m_recvBuf.indexOf(char(0xAA));
-        if (head < 0) { m_recvBuf.clear(); return; }
-        if (head > 0)
-            m_recvBuf.remove(0, head);          // 丢弃帧头前的垃圾字节
+    gw::Header h;
+    h.serviceId = gw::SVC_SERIAL_BRIDGE;
+    h.msgType   = gw::REGISTER;
+    h.length    = 4;
+    QByteArray payload(4, '\0');
+    payload[0] = char((gw::SVC_SERIAL_BRIDGE >> 24) & 0xFF);
+    payload[1] = char((gw::SVC_SERIAL_BRIDGE >> 16) & 0xFF);
+    payload[2] = char((gw::SVC_SERIAL_BRIDGE >> 8) & 0xFF);
+    payload[3] = char(gw::SVC_SERIAL_BRIDGE & 0xFF);
+    m_socket->write(gw::encodeFrame(h, payload));
+}
 
-        // 2. 最小帧长:AA+cmd+device+len+checksum+55 = 6 字节
-        if (m_recvBuf.size() < 6)
-            return;                              // 半包,等更多数据
+void GatewayClient::sendHeartbeat()
+{
+    if (!isConnected()) return;
+    gw::Header h;
+    h.serviceId = gw::SVC_SERIAL_BRIDGE;
+    h.msgType   = gw::HEARTBEAT;
+    m_socket->write(gw::encodeFrame(h));
+}
 
-        // 3. 按 dataLen 定位帧尾
-        int dataLen = static_cast<quint8>(m_recvBuf.at(3));
-        int frameLen = 6 + dataLen;              // 头4 + data + checksum + 尾1
-        if (m_recvBuf.size() < frameLen)
-            return;                              // 半包
+void GatewayClient::respond(quint32 clientId, quint8 errorCode, const QByteArray &payload)
+{
+    if (!isConnected()) return;
+    gw::Header h;
+    h.serviceId = gw::SVC_SERIAL_BRIDGE;
+    h.clientId  = clientId;
+    h.msgType   = gw::RESPONSE;
+    h.errorCode = errorCode;
+    h.length    = quint32(payload.size());
+    m_socket->write(gw::encodeFrame(h, payload));
+}
 
-        // 4. 校验帧尾
-        if (static_cast<quint8>(m_recvBuf.at(frameLen - 1)) != 0x55) {
-            m_recvBuf.remove(0, 1);              // 假帧头,跳过继续扫
+void GatewayClient::onReadyRead()
+{
+    m_recvBuf.append(m_socket->readAll());
+    drainFrames();
+}
+
+// 按"25 字节头 + length 字节载荷"切帧，处理半包/粘包/错位重同步
+void GatewayClient::drainFrames()
+{
+    while (m_recvBuf.size() >= gw::kHeaderSize) {
+        gw::Header h = gw::decodeHeader(m_recvBuf, 0);
+        if (h.magic != gw::kMagic) {
+            m_recvBuf.remove(0, 1);   // 协议错位，丢一个字节重新找帧头
             continue;
         }
+        if (h.length > (1u << 20)) {  // 异常大包，直接丢弃
+            Logger::instance()->warning(QString("网关帧长度异常: %1，清空缓冲").arg(h.length));
+            m_recvBuf.clear();
+            return;
+        }
+        const int total = gw::kHeaderSize + int(h.length);
+        if (m_recvBuf.size() < total) break;   // 半包，等更多数据
 
-        // 5. 完整帧上抛
-        emit gatewayMessage(m_recvBuf.left(frameLen));
-        m_recvBuf.remove(0, frameLen);
+        QByteArray payload = m_recvBuf.mid(gw::kHeaderSize, int(h.length));
+        m_recvBuf.remove(0, total);
+
+        if (h.msgType == gw::REQUEST) {
+            Logger::instance()->info(QString("网关下发 REQUEST service=%1 method=%2 client=%3 %4B")
+                                         .arg(h.serviceId).arg(h.methodId)
+                                         .arg(h.clientId).arg(payload.size()));
+            emit remoteFrame(h.clientId, h.methodId, payload);
+        }
+        // RESPONSE / NOTIFY / HEARTBEAT：串口桥暂不需要处理
     }
 }

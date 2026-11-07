@@ -34,6 +34,7 @@ qt_add_executable(mawinHcom
     protocolframe.h
     protocolframe.cpp
     gatewayclient.h gatewayclient.cpp   # 边缘代理:串口帧转发 epoll 网关
+    gatewayprotocol.h                   # 与 SomeIpGateway 对齐的线上协议
     app.rc          # exe 图标(任务管理器/资源管理器)
     resources.qrc   # Qt 资源(窗口图标)
 )
