@@ -1,6 +1,7 @@
 #include "gatewayclient.h"
 #include "log.h"
 #include <QDebug>
+#include <QNetworkProxy>
 
 GatewayClient::GatewayClient(QObject *parent)
     : QObject(parent)
@@ -13,6 +14,10 @@ GatewayClient::GatewayClient(QObject *parent)
     connect(m_socket, &QTcpSocket::errorOccurred, this, &GatewayClient::onErrorOccurred);
     connect(m_hbTimer, &QTimer::timeout, this, &GatewayClient::sendHeartbeat);
     m_hbTimer->setInterval(3000);   // 3s 一次心跳，小于网关的超时阈值
+
+    // 网关通常是局域网直连，强制不走系统代理（避免 Clash 等代理导致
+    // ProxyTypeNotSupportedError："The proxy type is invalid for this operation"）
+    m_socket->setProxy(QNetworkProxy::NoProxy);
 }
 
 GatewayClient::~GatewayClient()
