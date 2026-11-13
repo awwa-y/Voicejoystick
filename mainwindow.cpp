@@ -41,9 +41,6 @@ MainWindow::MainWindow(QWidget *parent)
     ui->tabWidget->setTabText(0, "电机控制");
     ui->tabWidget->setTabText(1, "舵机控制");
     ui->tabWidget->setTabText(2, "温湿度传感器");
-    m_motorConnected = false;
-    m_servoConnected = false;
-    m_sensorConnected = false;
     connect(ui->motorConnectButton, &QPushButton::clicked, this, [this]{ toggleDevice(DEVICE_TYPE_MOTOR); });
     connect(ui->servoConnectButton, &QPushButton::clicked, this, [this]{ toggleDevice(DEVICE_TYPE_SERVO); });
     connect(ui->sensorConnectButton, &QPushButton::clicked, this, [this]{ toggleDevice(DEVICE_TYPE_HUMIDITY_SENSOR); });
@@ -82,6 +79,10 @@ MainWindow::MainWindow(QWidget *parent)
         refreshActiveDevice(type);
         updateDeviceListCombox();
     });
+    // 断线自动重连：只在 UI 上显示"重连中"，不打断用户操作
+    connect(deviceManager, &DeviceManager::deviceReconnecting, this, &MainWindow::onDeviceReconnecting);
+    // 重连成功：把 UI 里的设备状态重新下发，保证软硬件一致
+    connect(deviceManager, &DeviceManager::deviceReconnected, this, &MainWindow::onDeviceReconnected);
     connect(m_joystick, &JoystickManager::joystickChanged,
             this, &MainWindow::changenewdata);
     connect(m_sendTimer, &QTimer::timeout,
@@ -241,18 +242,33 @@ void MainWindow::refreshActiveDevice(DeviceType type)
 {
     int deviceId = devicetypeIdmap.value(type, -1);
     bool connected = (deviceId > 0 && deviceManager && deviceManager->isDeviceConnected(deviceId));
+    bool reconnecting = (deviceId > 0 && deviceManager && deviceManager->isReconnecting(deviceId));
 
-    switch (type) {
-    case DEVICE_TYPE_MOTOR:           m_motorConnected  = connected; break;
-    case DEVICE_TYPE_SERVO:           m_servoConnected  = connected; break;
-    case DEVICE_TYPE_HUMIDITY_SENSOR: m_sensorConnected = connected; break;
-    default: break;
+    if (QPushButton *btn = connectButton(type)) {
+        // 重连中按钮仍可点：点是"立即重试"，不用等退避到点
+        if (connected)          btn->setText("断开");
+        else if (reconnecting)  btn->setText("重连中…");
+        else                    btn->setText("连接");
     }
 
-    if (QPushButton *btn = connectButton(type))
-        btn->setText(connected ? "断开" : "连接");
-
     updateDeviceTabStatus(type, !m_devicesByType.value(type).isEmpty());
+}
+
+// 活动设备状态文案：已连接 / 重连中 / 未连接
+QString MainWindow::deviceStatusText(DeviceType type)
+{
+    int deviceId = devicetypeIdmap.value(type, -1);
+    if (deviceId <= 0 || !deviceManager) return "未添加设备";
+
+    if (deviceManager->isDeviceConnected(deviceId)) {
+        QString port = deviceManager->getDevicePortName(deviceId);
+        int baud = deviceManager->getDeviceBaudRate(deviceId);
+        return QString("已连接: %1, 波特率: %2").arg(port).arg(baud);
+    }
+    if (deviceManager->isReconnecting(deviceId)) {
+        return "重连中…（串口异常/设备已拔出，正在自动重试）";
+    }
+    return "未连接";
 }
 
 // 刷新按钮：重新枚举串口填进下拉框
@@ -278,13 +294,21 @@ void MainWindow::onDataReceived(int deviceId, const QByteArray &data)
 }
 
 // 串口错误：弹窗提示并重置该设备的连接状态
+// 自动重连过程中的错误不弹模态框——5 秒一次的弹窗会让人没法用界面
 void MainWindow::onSerialError(int deviceId, const QString &error)
 {
     qDebug() << "串口错误:" << error;
 
+    DeviceType type = deviceManager->getDeviceType(deviceId);
+
+    if (deviceManager->isReconnecting(deviceId)) {
+        refreshActiveDevice(type);
+        updateDeviceListCombox();
+        return;
+    }
+
     // 获取设备信息
     QString port = deviceManager->getDevicePortName(deviceId);
-    DeviceType type = deviceManager->getDeviceType(deviceId);
     QString deviceName = getDeviceNameByType(type);
 
     // 弹出错误对话框
@@ -293,6 +317,54 @@ void MainWindow::onSerialError(int deviceId, const QString &error)
 
     // 按设备真实状态刷新（错误后 isConnected 已为 false）
     refreshActiveDevice(type);
+    updateDeviceListCombox();
+}
+
+// 断线、已排定第 attempt 次自动重连：只更新 UI，不打扰用户
+void MainWindow::onDeviceReconnecting(int deviceId, int attempt, int delayMs)
+{
+    DeviceType type = deviceManager->getDeviceType(deviceId);
+
+    // 退避到 5s 后每次重连都写日志会刷屏，第 1 次和每 5 次记一条
+    if (attempt == 1 || attempt % 5 == 0) {
+        Logger::instance()->warning(QString("%1 (ID:%2) 串口断开，自动重连第 %3 次（%4ms 后）")
+                                        .arg(getDeviceNameByType(type)).arg(deviceId)
+                                        .arg(attempt).arg(delayMs));
+    }
+
+    refreshActiveDevice(type);
+    updateDeviceListCombox();
+}
+
+// 自动重连成功：设备（尤其 STM32）重新插拔后可能已经复位，
+// 把 UI 里的当前控制状态重新下发一遍，软硬件才不会各说各话
+void MainWindow::onDeviceReconnected(int deviceId)
+{
+    DeviceType type = deviceManager->getDeviceType(deviceId);
+    Logger::instance()->info(QString("%1 (ID:%2) 自动重连成功，开始恢复设备状态")
+                                 .arg(getDeviceNameByType(type)).arg(deviceId));
+
+    switch (type) {
+    case DEVICE_TYPE_MOTOR:
+        emit sendDataRequest(deviceId, CommandProcessor::createMotorSpeedCommand(m_speedValue));
+        Logger::instance()->info(QString("恢复电机速度: %1").arg(m_speedValue));
+        break;
+    case DEVICE_TYPE_SERVO: {
+        int angle = ui->servoAngleSlider->value();
+        emit sendDataRequest(deviceId, CommandProcessor::createServoAngleCommand(angle));
+        Logger::instance()->info(QString("恢复舵机角度: %1°").arg(angle));
+        break;
+    }
+    case DEVICE_TYPE_HUMIDITY_SENSOR:
+        emit sendDataRequest(deviceId, CommandProcessor::createSensorReadCommand());
+        Logger::instance()->info("恢复传感器读数: 已发起一次读取");
+        break;
+    default:
+        break;
+    }
+
+    refreshActiveDevice(type);
+    updateDeviceListCombox();
 }
 
 // 串口打开成功：置连接状态，按钮变"断开"
@@ -633,6 +705,14 @@ void MainWindow::onRemoteFrame(quint32 clientId, quint32 methodId, const QByteAr
     }
 
     if (deviceId > 0) {
+        // 设备没连上（拔了/正在重连）时不能假装转发成功，否则远端会以为指令已下发
+        if (!deviceManager->isDeviceConnected(deviceId)) {
+            Logger::instance()->warning(QString("网关远程控制: 设备 %1 未连接（重连中=%2），拒绝转发")
+                                            .arg(deviceId)
+                                            .arg(deviceManager->isReconnecting(deviceId) ? "是" : "否"));
+            m_gateway->respond(clientId, gw::SERVICE_UNAVAILABLE);
+            return;
+        }
         emit sendDataRequest(deviceId, payload);
         Logger::instance()->info(QString("网关远程控制: 转发 %1 字节到设备 %2")
                                      .arg(payload.size()).arg(deviceId));
@@ -684,56 +764,17 @@ void MainWindow::updateDeviceTabStatus(DeviceType type, bool added)
     switch (type) {
     case DEVICE_TYPE_MOTOR:
         ui->tabWidget->setTabText(0, added ? "电机控制 (已添加)" : "电机控制 (未添加)");
-        // ui->motorControlWidget->setEnabled(added && m_motorConnected);
-
-        if (added && devicetypeIdmap.contains(DEVICE_TYPE_MOTOR)) {
-            int deviceId = devicetypeIdmap[DEVICE_TYPE_MOTOR];
-            if (m_motorConnected) {
-                QString port = deviceManager->getDevicePortName(deviceId);
-                int baud = deviceManager->getDeviceBaudRate(deviceId);
-                ui->motorStatusLabel->setText(QString("已连接: %1, 波特率: %2").arg(port).arg(baud));
-            } else {
-                ui->motorStatusLabel->setText("未连接");
-            }
-        } else {
-            ui->motorStatusLabel->setText("未添加设备");
-        }
+        ui->motorStatusLabel->setText(added ? deviceStatusText(DEVICE_TYPE_MOTOR) : "未添加设备");
         break;
 
     case DEVICE_TYPE_SERVO:
         ui->tabWidget->setTabText(1, added ? "舵机控制 (已添加)" : "舵机控制 (未添加)");
-        // ui->servoControlWidget->setEnabled(added && m_servoConnected);
-
-        if (added && devicetypeIdmap.contains(DEVICE_TYPE_SERVO)) {
-            int deviceId = devicetypeIdmap[DEVICE_TYPE_SERVO];
-            if (m_servoConnected) {
-                QString port = deviceManager->getDevicePortName(deviceId);
-                int baud = deviceManager->getDeviceBaudRate(deviceId);
-                ui->servoStatusLabel->setText(QString("已连接: %1, 波特率: %2").arg(port).arg(baud));
-            } else {
-                ui->servoStatusLabel->setText("未连接");
-            }
-        } else {
-            ui->servoStatusLabel->setText("未添加设备");
-        }
+        ui->servoStatusLabel->setText(added ? deviceStatusText(DEVICE_TYPE_SERVO) : "未添加设备");
         break;
 
     case DEVICE_TYPE_HUMIDITY_SENSOR:
         ui->tabWidget->setTabText(2, added ? "温湿度传感器 (已添加)" : "温湿度传感器 (未添加)");
-        // ui->sensorControlWidget->setEnabled(added && m_sensorConnected);
-
-        if (added && devicetypeIdmap.contains(DEVICE_TYPE_HUMIDITY_SENSOR)) {
-            int deviceId = devicetypeIdmap[DEVICE_TYPE_HUMIDITY_SENSOR];
-            if (m_sensorConnected) {
-                QString port = deviceManager->getDevicePortName(deviceId);
-                int baud = deviceManager->getDeviceBaudRate(deviceId);
-                ui->sensorStatusLabel->setText(QString("已连接: %1, 波特率: %2").arg(port).arg(baud));
-            } else {
-                ui->sensorStatusLabel->setText("未连接");
-            }
-        } else {
-            ui->sensorStatusLabel->setText("未添加设备");
-        }
+        ui->sensorStatusLabel->setText(added ? deviceStatusText(DEVICE_TYPE_HUMIDITY_SENSOR) : "未添加设备");
         break;
 
     case DEVICE_TYPE_UNKNOWN:
@@ -818,9 +859,12 @@ void MainWindow::updateDeviceListCombox()
             QString port = deviceManager->getDevicePortName(deviceId);
             QString deviceName = getDeviceNameByType(type);
             bool connected = deviceManager->isDeviceConnected(deviceId);
+            bool reconnecting = deviceManager->isReconnecting(deviceId);
+            QString tag;
+            if (connected)          tag = " [已连接]";
+            else if (reconnecting)  tag = " [重连中]";
             QString itemText = QString("%1 - %2 (ID:%3)%4")
-                                   .arg(port, deviceName, QString::number(deviceId),
-                                        connected ? " [已连接]" : "");
+                                   .arg(port, deviceName, QString::number(deviceId), tag);
             ui->deviceListCombox->addItem(itemText, deviceId);
         }
     }

@@ -20,6 +20,7 @@ qt_add_executable(mawinHcom
     uitheme.cpp
     serialwork.h
     serialwork.cpp
+    reconnectpolicy.h                   # 断线重连退避策略(纯逻辑,可单测)
     log.h
     log.cpp
     joystickmanager.h
@@ -137,3 +138,20 @@ qt_add_executable(test_protocolframe
 target_link_libraries(test_protocolframe PRIVATE Qt6::Core)
 
 add_test(NAME protocolframe COMMAND test_protocolframe)
+
+# 断线重连：退避序列 + "首开失败不重连"契约。
+# 不需要真实硬件：打开一个不存在的端口就能覆盖失败分支
+qt_add_executable(test_reconnect
+    test_reconnect.cpp
+    reconnectpolicy.h
+    serialwork.h
+    serialwork.cpp
+    ringbuffer.h
+    ringbuffer.cpp
+    protocolframe.h
+    protocolframe.cpp
+)
+target_link_libraries(test_reconnect PRIVATE Qt6::Core Qt6::SerialPort)
+
+add_test(NAME reconnect COMMAND test_reconnect)
+set_tests_properties(reconnect PROPERTIES TIMEOUT 30)

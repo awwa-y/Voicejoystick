@@ -69,6 +69,10 @@ private slots:
 
     void onDeviceComboBoxChanged(int index);                       // 切换活动设备
     void onDeviceStatusChanged(int deviceId, const QString &status);
+    // 断线后已排定自动重连（attempt 第几次，delayMs 本次等待）
+    void onDeviceReconnecting(int deviceId, int attempt, int delayMs);
+    // 自动重连成功：把设备侧状态重新下发一遍（设备可能已经重新上电）
+    void onDeviceReconnected(int deviceId);
     // 收到 DeviceManager 解析出的完整协议帧（data 是帧内数据段，不是裸字节流）
     void onFrameReceived(int deviceId, quint8 cmdType, quint8 deviceType, const QByteArray &data);
 
@@ -84,6 +88,7 @@ private:
     QPushButton *connectButton(DeviceType type);              // 类型 → 对应连接按钮
     bool isTypeConnected(DeviceType type) const;              // 类型 → 是否已连接
     void refreshActiveDevice(DeviceType type);                // 从 DeviceManager 重算活动设备状态并刷新 UI
+    QString deviceStatusText(DeviceType type);                // 活动设备状态文案（已连接/重连中/未连接）
     Ui::MainWindow *ui;
     JoystickManager *m_joystick;    // 摇杆控件
     QTimer *m_sendTimer;            // 摇杆数据定时发送（40ms 周期）
@@ -91,10 +96,6 @@ private:
     int baud;
     int m_pendingX, m_pendingY;     // 待发送的摇杆位置
     int m_speedValue;               // 当前速度
-
-    bool m_motorConnected;
-    bool m_servoConnected;
-    bool m_sensorConnected;
 
     // 语音模块：worker 住在独立线程，避免模型推理卡 UI
     QThread      m_voskThread;

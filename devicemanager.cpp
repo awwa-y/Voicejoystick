@@ -49,6 +49,16 @@ int DeviceManager::addDevice(const QString &portName, int baudRate, const QStrin
     connect(device->serialWork, &SerialWork::serialOpened, this, &DeviceManager::handleSerialOpened);
     connect(device->serialWork, &SerialWork::serialClosed, this, &DeviceManager::handleSerialClosed);
     connect(device->serialWork, &SerialWork::errorOccurred, this, &DeviceManager::handleSerialError);
+    connect(device->serialWork, &SerialWork::reconnecting, this, &DeviceManager::handleSerialReconnecting);
+    // 重插后系统可能给了新的 COM 号：跟着更新，否则 UI 一直显示已经不存在的端口
+    connect(device->serialWork, &SerialWork::portNameChanged, this,
+            [this](int deviceId, const QString &newName) {
+                if (!devices.contains(deviceId)) return;
+                const QString oldName = devices[deviceId]->portName;
+                devices[deviceId]->portName = newName;
+                Logger::instance()->warning(QString("设备%1 端口由 %2 变更为 %3")
+                                                .arg(deviceId).arg(oldName, newName));
+            });
 
     // 解析结果在串口线程就地产出，经信号跨线程投递到主线程
     connect(device->serialWork, &SerialWork::dataReceived, this,
@@ -275,17 +285,26 @@ bool DeviceManager::isDeviceConnected(int deviceId) const
 // ===== 串口线程回调（在主线程执行，Qt::QueuedConnection 投递过来） =====
 
 // 串口打开成功：置连接状态、刷新活跃时间、通知 UI
+// 如果这台设备之前连上过，说明这次是断线恢复，额外发 deviceReconnected
 void DeviceManager::handleSerialOpened(int deviceId)
 {
     if (devices.contains(deviceId)) {
         DeviceInfo *device = devices[deviceId];
+        const bool recovered = device->everConnected;
+
+        device->everConnected = true;
         device->isConnected = true;
+        device->reconnecting = false;
+        device->retryCount = 0;
         device->status = "Connected";
         device->lastActivity = QDateTime::currentDateTime();
 
-        qDebug() << "Device" << deviceId << "connected";
+        qDebug() << "Device" << deviceId << (recovered ? "reconnected" : "connected");
         emit deviceConnected(deviceId);
         emit deviceStatusChanged(deviceId, "Connected");
+        if (recovered) {
+            emit deviceReconnected(deviceId);
+        }
     }
 }
 
@@ -296,6 +315,10 @@ void DeviceManager::handleSerialClosed(int deviceId)
         DeviceInfo *device = devices[deviceId];
         device->isConnected = false;
         device->status = "Disconnected";
+        // 先按"已断开"收尾；如果这次断开要自动重连，紧接着的
+        // handleSerialReconnecting 会把状态和标志重新置成"重连中"
+        device->reconnecting = false;
+        device->retryCount = 0;
         // 解析器在 SerialWork 线程里，closeSerial 时已自行 reset
 
         qDebug() << "Device" << deviceId << "disconnected";
@@ -304,20 +327,56 @@ void DeviceManager::handleSerialClosed(int deviceId)
     }
 }
 
+// 断线且已排定自动重连：状态改成"重连中"，并透传给 UI
+// reconnecting 标志同时是一个闸门：重连期间的串口错误不再把状态改写回 Error，
+// 也不会让 UI 弹模态框
+void DeviceManager::handleSerialReconnecting(int deviceId, int attempt, int delayMs)
+{
+    if (devices.contains(deviceId)) {
+        DeviceInfo *device = devices[deviceId];
+        device->reconnecting = true;
+        device->retryCount = attempt;
+        device->status = QString("Reconnecting(第%1次, %2ms)").arg(attempt).arg(delayMs);
 
+        qDebug() << "Device" << deviceId << "reconnecting attempt" << attempt << "in" << delayMs << "ms";
+        emit deviceReconnecting(deviceId, attempt, delayMs);
+        emit deviceStatusChanged(deviceId, device->status);
+    }
+}
 
 // 串口错误：置错误状态并上报。设备拔出（ResourceError）最终也走这里
+// 重连过程中收到的错误只上报，不改状态——状态由 handleSerialReconnecting 维护
 void DeviceManager::handleSerialError(int deviceId, const QString &error)
 {
     if (devices.contains(deviceId)) {
         DeviceInfo *device = devices[deviceId];
-        device->status = QString("Error: %1").arg(error);
-        device->isConnected = false;
 
         qDebug() << "Device" << deviceId << "error:" << error;
+
+        if (!device->reconnecting) {
+            device->status = QString("Error: %1").arg(error);
+            device->isConnected = false;
+        }
+
         emit deviceError(deviceId, error);
-        emit deviceStatusChanged(deviceId, device->status);
+        if (!device->reconnecting) {
+            emit deviceStatusChanged(deviceId, device->status);
+        }
     }
+}
+
+// 开关自动重连：转发到设备线程（SerialWork 住在那里）
+void DeviceManager::setAutoReconnect(int deviceId, bool on)
+{
+    if (!devices.contains(deviceId)) return;
+    QMetaObject::invokeMethod(devices[deviceId]->serialWork, "setAutoReconnect", Qt::QueuedConnection,
+                              Q_ARG(bool, on));
+}
+
+// 是否正处在自动重连中
+bool DeviceManager::isReconnecting(int deviceId) const
+{
+    return devices.contains(deviceId) && devices[deviceId]->reconnecting;
 }
 
 // ===== 简单参数查询（不存在时返回哨兵值） =====

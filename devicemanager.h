@@ -50,6 +50,10 @@ public:
     // 模拟模式：不开真实串口，直接把设备标记为已连接、把发送帧打到日志（无硬件演示用）
     void setSimulate(bool on);
     bool isSimulate() const { return m_simulate; }
+    // 开关某设备的自动重连（转发到设备线程里的 SerialWork）
+    void setAutoReconnect(int deviceId, bool on);
+    // 该设备是否正处在自动重连过程中（UI 据此显示"重连中"、并抑制错误弹窗）
+    bool isReconnecting(int deviceId) const;
     // 给某类型所有设备发数据（比如所有电机一起停）
     bool sendCommandByType(DeviceType deviceType, const QByteArray &data);
     // 给所有在线设备发数据
@@ -74,6 +78,10 @@ signals:
     void deviceFrameReceived(int deviceId, quint8 cmdType, quint8 deviceType, const QByteArray &data);
     void deviceConnected(int deviceId);
     void deviceDisconnected(int deviceId);
+    // 断线后进入自动重连：attempt 第几次，delayMs 本次等待时长
+    void deviceReconnecting(int deviceId, int attempt, int delayMs);
+    // 自动重连成功（之前连上过，这次是恢复）——上层可据此重新下发设备状态
+    void deviceReconnected(int deviceId);
     void deviceError(int deviceId, const QString &error);
     void deviceActivity(int deviceId);                                // 有发送动作
     void activeDeviceChanged(int deviceId);
@@ -82,6 +90,7 @@ public slots:
     void handleSerialOpened(int deviceId);                            // 串口打开成功的回调
     void handleSerialClosed(int deviceId);                            // 串口关闭的回调
     void handleSerialError(int deviceId, const QString &error);       // 串口错误的回调
+    void handleSerialReconnecting(int deviceId, int attempt, int delayMs);  // 断线，已排定重连
 
     // 把请求定向投递到指定设备的线程（替代原来对全体 SerialWork 的广播）
     void openSerialRequest(const QString &portName, int baudRate, int deviceId);
@@ -97,6 +106,9 @@ private:
         int baudRate;
         QString status;
         bool isConnected;
+        bool reconnecting = false;   // 正在自动重连
+        bool everConnected = false;  // 曾经连上过（区分首连和断线恢复）
+        int  retryCount = 0;         // 已排定的重连次数
         SerialWork *serialWork;      // 串口工作者（住在 device->thread 里）
         QThread *thread;             // 该设备专属线程
         QDateTime lastActivity;      // 最后一次收发时间（判断超时用）
